@@ -1,45 +1,34 @@
-# MoveTo.ps1 - Moves files/folders using native Windows dialog
-# Called by MoveTo.vbs after collecting all paths
-# Uses Shell.Application.MoveHere() for native progress + conflict resolution
+# MoveTo.ps1 - Alternative PowerShell version (backup)
+# The primary mover is MoveTo.vbs (uses Shell.Application.MoveHere)
+# This file is kept as reference / fallback
 
-$tempFile = "$env:TEMP\MoveTo_paths.txt"
+param(
+    [string]$SourcePath,
+    [string]$ShortcutName
+)
 
-if (-not (Test-Path $tempFile)) { exit 0 }
+if (-not $SourcePath -and $args.Count -ge 1) { $SourcePath = $args[0] }
+if (-not $ShortcutName -and $args.Count -ge 2) { $ShortcutName = $args[1] }
 
-# Read and parse all collected paths
-$lines = Get-Content $tempFile -ErrorAction SilentlyContinue | Where-Object { $_ -and $_ -match '\|' }
+$destinationsFolder = "D:\Users\joty79\scripts\MoveTo\destinations"
 
-# Cleanup temp file immediately
-Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
+# Validate source
+if (-not (Test-Path -LiteralPath $SourcePath)) { exit 1 }
 
-if (-not $lines -or $lines.Count -eq 0) { exit 0 }
+# Resolve destination
+$shortcutPath = Join-Path $destinationsFolder "$ShortcutName.lnk"
+if (-not (Test-Path -LiteralPath $shortcutPath -PathType Leaf)) { exit 1 }
 
-# Group by destination
-$groups = @{}
-foreach ($line in $lines) {
-    $parts = $line -split '\|', 2
-    if ($parts.Count -eq 2) {
-        $dest = $parts[0]
-        $source = $parts[1]
-        if (-not $groups.ContainsKey($dest)) {
-            $groups[$dest] = @()
-        }
-        $groups[$dest] += $source
-    }
-}
+$wshell = New-Object -ComObject WScript.Shell
+$lnk = $wshell.CreateShortcut($shortcutPath)
+$destPath = $lnk.TargetPath
 
-# Move using Shell.Application for native dialog
+if (-not $destPath -or -not (Test-Path -LiteralPath $destPath -PathType Container)) { exit 1 }
+
+# Move using native Windows Explorer mechanism
 $shell = New-Object -ComObject Shell.Application
-
-foreach ($dest in $groups.Keys) {
-    $destFolder = $shell.NameSpace($dest)
-    if (-not $destFolder) { continue }
-
-    $sources = $groups[$dest]
-    foreach ($source in $sources) {
-        if (Test-Path -LiteralPath $source) {
-            # Flag 0 = full native dialog (progress bar + conflict resolution)
-            $destFolder.MoveHere($source, 0)
-        }
-    }
+$destFolder = $shell.NameSpace($destPath)
+if ($destFolder) {
+    # Flag 0 = full native dialog (progress + conflict resolution)
+    $destFolder.MoveHere($SourcePath, 0)
 }
