@@ -1,0 +1,45 @@
+Windows Registry Editor Version 5.00
+
+; ======== CLEANUP ========
+[-HKEY_CURRENT_USER\Software\Classes\*\shell\MoveToCustom]
+[-HKEY_CURRENT_USER\Software\Classes\Directory\shell\MoveToCustom]
+
+; ======== MOVE TO FOR FILES ========
+[HKEY_CURRENT_USER\Software\Classes\*\shell\MoveToCustom]
+"MUIVerb"="Move To"
+"Icon"="shell32.dll,-16761"
+"SubCommands"=""
+
+[HKEY_CURRENT_USER\Software\Classes\*\shell\MoveToCustom\shell]
+
+; Edit destinations (always last)
+[HKEY_CURRENT_USER\Software\Classes\*\shell\MoveToCustom\shell\zzz_Edit]
+"MUIVerb"="[Edit destinations]"
+"Icon"="shell32.dll,-16710"
+
+[HKEY_CURRENT_USER\Software\Classes\*\shell\MoveToCustom\shell\zzz_Edit\command]
+@="wscript.exe \"D:\\Users\\joty79\\scripts\\MoveTo\\EditDestinations.vbs\""
+
+; ======== MOVE TO FOR FOLDERS ========
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\MoveToCustom]
+"MUIVerb"="Move To"
+"Icon"="shell32.dll,-16761"
+"SubCommands"=""
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\MoveToCustom\shell]
+
+; Add as destination (only for folders)
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\MoveToCustom\shell\yyy_Add]
+"MUIVerb"="[Add as destination]"
+"Icon"="shell32.dll,-16769"
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\MoveToCustom\shell\yyy_Add\command]
+@="wscript.exe \"D:\\Users\\joty79\\scripts\\MoveTo\\AddMoveToDestination.vbs\" \"%1\""
+
+; Edit destinations
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\MoveToCustom\shell\zzz_Edit]
+"MUIVerb"="[Edit destinations]"
+"Icon"="shell32.dll,-16710"
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\MoveToCustom\shell\zzz_Edit\command]
+@="wscript.exe \"D:\\Users\\joty79\\scripts\\MoveTo\\EditDestinations.vbs\""
