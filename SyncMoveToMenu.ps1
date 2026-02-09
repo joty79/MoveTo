@@ -57,7 +57,7 @@ foreach ($sc in $shortcuts) {
         }
     }
     
-    $command = "pwsh.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$moveToScript`" `"%1`" `"$name`""
+    $command = "wscript.exe `"D:\Users\joty79\scripts\MoveTo\MoveTo.vbs`" `"%1`" `"$name`""
     
     foreach ($regPath in @($regPathFiles, $regPathDirs)) {
         $keyPath = "$regPath\$keyName"

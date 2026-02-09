@@ -1,49 +1,45 @@
-# MoveTo.ps1 - Moves file/folder to destination
-# Reads ALL shortcuts first to trigger Windows link resolution
+# MoveTo.ps1 - Moves files/folders using native Windows dialog
+# Called by MoveTo.vbs after collecting all paths
+# Uses Shell.Application.MoveHere() for native progress + conflict resolution
 
-param(
-    [string]$SourcePath,
-    [string]$ShortcutName
-)
+$tempFile = "$env:TEMP\MoveTo_paths.txt"
 
-if (-not $SourcePath -and $args.Count -ge 1) { $SourcePath = $args[0] }
-if (-not $ShortcutName -and $args.Count -ge 2) { $ShortcutName = $args[1] }
+if (-not (Test-Path $tempFile)) { exit 0 }
 
-$destinationsFolder = "D:\Users\joty79\scripts\MoveTo\destinations"
-$shell = New-Object -ComObject WScript.Shell
+# Read and parse all collected paths
+$lines = Get-Content $tempFile -ErrorAction SilentlyContinue | Where-Object { $_ -and $_ -match '\|' }
 
-# Read ALL shortcuts to trigger link resolution
-Get-ChildItem -Path $destinationsFolder -Filter "*.lnk" -ErrorAction SilentlyContinue | ForEach-Object {
-    try { $null = $shell.CreateShortcut($_.FullName).TargetPath } catch { }
+# Cleanup temp file immediately
+Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
+
+if (-not $lines -or $lines.Count -eq 0) { exit 0 }
+
+# Group by destination
+$groups = @{}
+foreach ($line in $lines) {
+    $parts = $line -split '\|', 2
+    if ($parts.Count -eq 2) {
+        $dest = $parts[0]
+        $source = $parts[1]
+        if (-not $groups.ContainsKey($dest)) {
+            $groups[$dest] = @()
+        }
+        $groups[$dest] += $source
+    }
 }
 
-# Check source exists
-if (-not (Test-Path -LiteralPath $SourcePath)) {
-    exit 1
-}
+# Move using Shell.Application for native dialog
+$shell = New-Object -ComObject Shell.Application
 
-# Get destination
-$shortcutPath = Join-Path $destinationsFolder "$ShortcutName.lnk"
-if (-not (Test-Path -LiteralPath $shortcutPath -PathType Leaf)) {
-    Add-Type -AssemblyName System.Windows.Forms
-    [System.Windows.Forms.MessageBox]::Show("Destination '$ShortcutName' not found.", "Move To", 0, 16) | Out-Null
-    exit 1
-}
+foreach ($dest in $groups.Keys) {
+    $destFolder = $shell.NameSpace($dest)
+    if (-not $destFolder) { continue }
 
-$lnk = $shell.CreateShortcut($shortcutPath)
-$destinationFolder = $lnk.TargetPath
-
-if (-not $destinationFolder -or -not (Test-Path -LiteralPath $destinationFolder -PathType Container)) {
-    Add-Type -AssemblyName System.Windows.Forms
-    [System.Windows.Forms.MessageBox]::Show("Destination path not found:`n$destinationFolder", "Move To", 0, 16) | Out-Null
-    exit 1
-}
-
-# Move
-try {
-    Move-Item -LiteralPath $SourcePath -Destination $destinationFolder -Force
-}
-catch {
-    Add-Type -AssemblyName System.Windows.Forms
-    [System.Windows.Forms.MessageBox]::Show("Move failed: $($_.Exception.Message)", "Move To", 0, 16) | Out-Null
+    $sources = $groups[$dest]
+    foreach ($source in $sources) {
+        if (Test-Path -LiteralPath $source) {
+            # Flag 0 = full native dialog (progress bar + conflict resolution)
+            $destFolder.MoveHere($source, 0)
+        }
+    }
 }
