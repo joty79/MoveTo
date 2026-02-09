@@ -1,3 +1,7 @@
+Powershell/
 .gemini/
 .antigravity/
 *.log
+
+destinations/*
+!destinations/.gitkeep
