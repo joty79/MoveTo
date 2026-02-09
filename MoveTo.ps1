@@ -1,34 +1,58 @@
-# MoveTo.ps1 - Alternative PowerShell version (backup)
-# The primary mover is MoveTo.vbs (uses Shell.Application.MoveHere)
-# This file is kept as reference / fallback
+# MoveTo.ps1 - Native clipboard CUT + paste
+# Reads ALL selected items from Explorer, puts them on clipboard as CUT,
+# then pastes to destination. Explorer handles transfer in background.
 
 param(
     [string]$SourcePath,
-    [string]$ShortcutName
+    [string]$DestPath
 )
 
-if (-not $SourcePath -and $args.Count -ge 1) { $SourcePath = $args[0] }
-if (-not $ShortcutName -and $args.Count -ge 2) { $ShortcutName = $args[1] }
+Add-Type -AssemblyName System.Windows.Forms
 
-$destinationsFolder = "D:\Users\joty79\scripts\MoveTo\destinations"
-
-# Validate source
-if (-not (Test-Path -LiteralPath $SourcePath)) { exit 1 }
-
-# Resolve destination
-$shortcutPath = Join-Path $destinationsFolder "$ShortcutName.lnk"
-if (-not (Test-Path -LiteralPath $shortcutPath -PathType Leaf)) { exit 1 }
-
-$wshell = New-Object -ComObject WScript.Shell
-$lnk = $wshell.CreateShortcut($shortcutPath)
-$destPath = $lnk.TargetPath
-
-if (-not $destPath -or -not (Test-Path -LiteralPath $destPath -PathType Container)) { exit 1 }
-
-# Move using native Windows Explorer mechanism
+# Find the Explorer window that has our source files selected
 $shell = New-Object -ComObject Shell.Application
-$destFolder = $shell.NameSpace($destPath)
-if ($destFolder) {
-    # Flag 0 = full native dialog (progress + conflict resolution)
-    $destFolder.MoveHere($SourcePath, 0)
+$sourceParent = Split-Path $SourcePath -Parent
+$selectedPaths = @()
+
+foreach ($win in $shell.Windows()) {
+    try {
+        $winPath = $win.Document.Folder.Self.Path
+        if ($winPath -eq $sourceParent) {
+            foreach ($item in $win.Document.SelectedItems()) {
+                $selectedPaths += $item.Path
+            }
+            break
+        }
+    } catch { }
 }
+
+# Fallback: if couldn't read selection, use the single source path
+if ($selectedPaths.Count -eq 0) {
+    $selectedPaths = @($SourcePath)
+}
+
+# ===== NATIVE CUT (same as Ctrl+X) =====
+# Put files on clipboard with Preferred DropEffect = MOVE (2)
+$files = New-Object System.Collections.Specialized.StringCollection
+foreach ($p in $selectedPaths) {
+    $files.Add($p)
+}
+
+$data = New-Object System.Windows.Forms.DataObject
+$data.SetFileDropList($files)
+
+# Preferred DropEffect = MOVE (2) = this makes it a CUT, not COPY
+$moveBytes = [byte[]]@(2, 0, 0, 0)
+$stream = New-Object System.IO.MemoryStream(, $moveBytes)
+$data.SetData("Preferred DropEffect", $stream)
+
+[System.Windows.Forms.Clipboard]::SetDataObject($data, $true)
+
+# ===== NATIVE PASTE (same as Ctrl+V) =====
+# Try InvokeVerb("paste") on destination folder
+$destFolder = $shell.NameSpace($DestPath)
+if ($destFolder) {
+    $destFolder.Self.InvokeVerb("paste")
+}
+
+# Script exits immediately - Explorer handles transfer in background
