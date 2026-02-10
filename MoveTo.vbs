@@ -52,7 +52,7 @@ If destPath = "" Or Not fso.FolderExists(destPath) Then
 End If
 
 ' Wait for other VBS instances to see marker and exit
-WScript.Sleep 1500
+WScript.Sleep 500
 
 ' Launch exe and WAIT for it to finish
 ' Exe has its own watchdog + named mutex for safety

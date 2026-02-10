@@ -141,7 +141,7 @@ class MoveTo {
         Log("PID:    " + Process.GetCurrentProcess().Id);
 
         // Wait for all context menu invocations to settle
-        Thread.Sleep(3000);
+        Thread.Sleep(1000);
 
         // ----- Collect selected items from Explorer -----
         sourcePaths = new List<string>();
