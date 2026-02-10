@@ -74,12 +74,15 @@ For Each win In shell.Windows
             If selectedItems.Count > 0 Then
                 Set destFolder = shell.NameSpace(destPath)
                 If Not destFolder Is Nothing Then
-                    logStream.WriteLine ts & " | Calling MoveHere..."
+                    logStream.WriteLine ts & " | Calling MoveHere per item..."
 
-                    ' MoveHere entire FolderItems collection — ONE operation
-                    destFolder.MoveHere selectedItems, 0
+                    ' MoveHere each FolderItem — rapid calls get batched by shell
+                    Dim item
+                    For Each item In selectedItems
+                        destFolder.MoveHere item, 0
+                    Next
 
-                    logStream.WriteLine FormatDateTime(Now, 3) & " | MoveHere returned"
+                    logStream.WriteLine FormatDateTime(Now, 3) & " | MoveHere loop done"
                 End If
             End If
             Exit For
