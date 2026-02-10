@@ -45,7 +45,7 @@ WScript.Sleep 500
 ' Launch compiled exe (proper STAThread + message pump)
 Dim cmd
 cmd = """D:\Users\joty79\scripts\MoveTo\MoveTo.exe"" """ & sourcePath & """ """ & destPath & """"
-wsh.Run cmd, 0, False
+wsh.Run cmd, 0, True
 
 ' Cleanup marker
 On Error Resume Next

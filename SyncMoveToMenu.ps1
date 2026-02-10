@@ -1,7 +1,6 @@
 # SyncMoveToMenu.ps1 - Syncs destinations with registry menu (with icons)
 
 $destinationsFolder = "D:\Users\joty79\scripts\MoveTo\destinations"
-$moveToScript = "D:\Users\joty79\scripts\MoveTo\MoveTo.ps1"
 
 $regPathFiles = "Registry::HKEY_CURRENT_USER\Software\Classes\*\shell\MoveToCustom\shell"
 $regPathDirs = "Registry::HKEY_CURRENT_USER\Software\Classes\Directory\shell\MoveToCustom\shell"
