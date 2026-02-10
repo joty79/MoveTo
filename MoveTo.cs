@@ -1,11 +1,13 @@
-// MoveTo.cs — Uses IFileOperation COM API (Vista+)
-// Handles 86k+ files in ONE operation with ONE progress dialog.
-// SHFileOperation crashed at ~20k files due to buffer limits.
+// MoveTo.cs — IFileOperation + Watchdog
+// PerformOperations() hangs in COM message pump after dialog closes.
+// Watchdog thread detects dialog close → Environment.Exit(0).
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 class MoveTo {
 
@@ -66,6 +68,17 @@ class MoveTo {
         [MarshalAs(UnmanagedType.LPStruct)] Guid riid,
         [MarshalAs(UnmanagedType.Interface)] out IShellItem ppv);
 
+    delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    static extern bool EnumWindows(EnumWindowsProc proc, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+
+    [DllImport("user32.dll")]
+    static extern bool IsWindowVisible(IntPtr hWnd);
+
     // ===== Constants =====
 
     static readonly Guid CLSID_FileOperation =
@@ -73,10 +86,10 @@ class MoveTo {
     static readonly Guid IID_IShellItem =
         new Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe");
 
-    const uint FOF_ALLOWUNDO     = 0x0040;
-    const uint FOF_NOCONFIRMMKDIR = 0x0200;
+    const uint FOF_ALLOWUNDO      = 0x0040;
+    const uint FOF_NOCONFIRMMKDIR  = 0x0200;
 
-    // ===== Logging =====
+    // ===== Helpers =====
 
     static string logFile = Path.Combine(
         Environment.GetEnvironmentVariable("TEMP") ?? ".", "MoveTo_debug.log");
@@ -88,20 +101,35 @@ class MoveTo {
         } catch { }
     }
 
+    static bool HasVisibleWindow() {
+        bool found = false;
+        uint myPid = (uint)Process.GetCurrentProcess().Id;
+        EnumWindows(delegate(IntPtr hwnd, IntPtr lp) {
+            uint pid;
+            GetWindowThreadProcessId(hwnd, out pid);
+            if (pid == myPid && IsWindowVisible(hwnd)) {
+                found = true;
+                return false;
+            }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+
     // ===== Main =====
 
     [STAThread]
     static int Main(string[] args) {
         if (args.Length < 2) return 1;
-        string sourcePath = args[0];
-        string destPath   = args[1];
+        string sourcePath   = args[0];
+        string destPath     = args[1];
         string sourceParent = Path.GetDirectoryName(sourcePath);
 
         Log("===== START =====");
         Log("Source: " + sourcePath);
         Log("Dest:   " + destPath);
 
-        // ----- Step 1: Collect selected items from Explorer -----
+        // ----- Collect selected items from Explorer -----
         var sourcePaths = new List<string>();
         Type shellType = Type.GetTypeFromProgID("Shell.Application");
         dynamic shell = Activator.CreateInstance(shellType);
@@ -139,7 +167,7 @@ class MoveTo {
         GC.Collect();
         GC.WaitForPendingFinalizers();
 
-        // ----- Step 2: IFileOperation — queue all, execute once -----
+        // ----- Queue items into IFileOperation -----
         Type foType = Type.GetTypeFromCLSID(CLSID_FileOperation);
         IFileOperation fileOp = (IFileOperation)Activator.CreateInstance(foType);
 
@@ -151,7 +179,6 @@ class MoveTo {
                 IID_IShellItem, out destItem);
 
             int queued = 0;
-            int skipped = 0;
             foreach (string path in sourcePaths) {
                 try {
                     IShellItem srcItem;
@@ -162,28 +189,62 @@ class MoveTo {
                     queued++;
                 } catch (Exception ex) {
                     Log("SKIP: " + path + " | " + ex.Message);
-                    skipped++;
                 }
             }
 
-            Log("Queued: " + queued + " | Skipped: " + skipped);
-            Log("PerformOperations starting...");
+            Log("Queued: " + queued);
 
+            // ===== WATCHDOG: force exit when dialog closes =====
+            // PerformOperations() HANGS after completion (COM message pump).
+            // This thread detects dialog close → Environment.Exit.
+            var watchdog = new Thread(() => {
+                bool dialogSeen = false;
+                DateTime start = DateTime.UtcNow;
+                Thread.Sleep(3000);
+
+                while (true) {
+                    Thread.Sleep(1000);
+                    bool hasWin = HasVisibleWindow();
+
+                    if (hasWin) {
+                        dialogSeen = true;
+                    }
+                    else if (dialogSeen) {
+                        // Dialog appeared then closed = done or cancelled
+                        Log("Watchdog: dialog closed → exit");
+                        Thread.Sleep(500);
+                        Environment.Exit(0);
+                    }
+
+                    // No dialog after 30s = instant transfer, force exit
+                    double elapsed = (DateTime.UtcNow - start).TotalSeconds;
+                    if (!dialogSeen && elapsed > 30) {
+                        Log("Watchdog: no dialog after 30s → exit");
+                        Environment.Exit(0);
+                    }
+
+                    // Hard timeout: 30 minutes
+                    if (elapsed > 1800) {
+                        Log("Watchdog: 30min timeout → exit");
+                        Environment.Exit(2);
+                    }
+                }
+            });
+            watchdog.IsBackground = true;
+            watchdog.Start();
+
+            Log("PerformOperations starting...");
             fileOp.PerformOperations();
 
-            bool aborted;
-            fileOp.GetAnyOperationsAborted(out aborted);
-            Log("Done. Aborted=" + aborted);
-
-            // FORCE EXIT — PerformOperations leaves COM message pump
-            // spinning at 100% CPU. OS cleans up everything on exit.
-            Environment.Exit(aborted ? 3 : 0);
+            // If we ever get here (unlikely), exit cleanly
+            Log("PerformOperations returned!");
+            Environment.Exit(0);
 
         } catch (Exception ex) {
             Log("FATAL: " + ex.ToString());
             Environment.Exit(4);
         }
 
-        return 0; // unreachable, keeps compiler happy
+        return 0;
     }
 }
