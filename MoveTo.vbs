@@ -1,6 +1,6 @@
-' MoveTo.vbs - ALL-IN-ONE (no PowerShell needed)
-' Marker check + COM MoveHere directly from wscript.exe
-' wscript.exe has native STA message pump — proper COM hosting.
+' MoveTo.vbs - Simplest possible: Ctrl+X, open dest, Ctrl+V, EXIT
+' Zero clipboard manipulation, zero COM during transfer.
+' wscript.exe exits immediately — Explorer handles everything.
 
 Option Explicit
 
@@ -20,14 +20,11 @@ markerFile = wsh.ExpandEnvironmentStrings("%TEMP%") & "\MoveTo_" & destName & ".
 
 On Error Resume Next
 Set f = fso.CreateTextFile(markerFile, False)
-If Err.Number <> 0 Then
-    ' Another instance already handling this
-    WScript.Quit 0
-End If
+If Err.Number <> 0 Then WScript.Quit 0
 On Error GoTo 0
 f.Close
 
-' ===== Resolve destination from shortcut =====
+' ===== Resolve destination =====
 Dim shortcutPath, lnk, destPath
 shortcutPath = "D:\Users\joty79\scripts\MoveTo\destinations\" & destName & ".lnk"
 If Not fso.FileExists(shortcutPath) Then
@@ -43,58 +40,43 @@ If destPath = "" Or Not fso.FolderExists(destPath) Then
     WScript.Quit 1
 End If
 
-' Wait for all other VBS instances to see marker and exit
+' Wait for other instances to exit
 WScript.Sleep 500
 
-' ===== THE MOVE — pure COM, no PowerShell =====
-Dim shell, sourceParent
-Set shell = CreateObject("Shell.Application")
-sourceParent = fso.GetParentFolderName(sourcePath)
-
-' Debug log
-Dim logFile, ts
+' ===== Debug log =====
+Dim logFile, logStream
 logFile = wsh.ExpandEnvironmentStrings("%TEMP%") & "\MoveTo_debug.log"
-ts = FormatDateTime(Now, 3)
-
-Dim logStream
 Set logStream = fso.OpenTextFile(logFile, 8, True)
-logStream.WriteLine ts & " | START | Source: " & sourcePath
-logStream.WriteLine ts & " | Dest: " & destPath
+logStream.WriteLine FormatDateTime(Now, 3) & " | START"
+logStream.WriteLine FormatDateTime(Now, 3) & " | Dest: " & destPath
 
-' Find Explorer window with selected items
-Dim win, winPath, selectedItems, destFolder
-For Each win In shell.Windows
-    On Error Resume Next
-    winPath = win.Document.Folder.Self.Path
-    If Err.Number = 0 Then
-        If winPath = sourceParent Then
-            Set selectedItems = win.Document.SelectedItems
-            logStream.WriteLine ts & " | Selected: " & selectedItems.Count & " items"
+' ===== Step 1: Ctrl+X (source window is active from right-click) =====
+wsh.SendKeys "^x"
+WScript.Sleep 500
+logStream.WriteLine FormatDateTime(Now, 3) & " | Ctrl+X sent"
 
-            If selectedItems.Count > 0 Then
-                Set destFolder = shell.NameSpace(destPath)
-                If Not destFolder Is Nothing Then
-                    logStream.WriteLine ts & " | Calling MoveHere per item..."
+' ===== Step 2: Open destination =====
+Dim shell
+Set shell = CreateObject("Shell.Application")
+shell.Open destPath
+logStream.WriteLine FormatDateTime(Now, 3) & " | Destination opened"
 
-                    ' MoveHere each FolderItem — rapid calls get batched by shell
-                    Dim item
-                    For Each item In selectedItems
-                        destFolder.MoveHere item, 0
-                    Next
+' Release ALL COM immediately
+Set shell = Nothing
 
-                    logStream.WriteLine FormatDateTime(Now, 3) & " | MoveHere loop done"
-                End If
-            End If
-            Exit For
-        End If
-    End If
-    On Error GoTo 0
-Next
+' Wait for destination window to load
+WScript.Sleep 1200
 
+' ===== Step 3: Ctrl+V (destination window is now foreground) =====
+wsh.SendKeys "^v"
+logStream.WriteLine FormatDateTime(Now, 3) & " | Ctrl+V sent"
 logStream.WriteLine FormatDateTime(Now, 3) & " | END"
 logStream.Close
 
-' Cleanup marker
+' ===== Cleanup marker and EXIT =====
 On Error Resume Next
 fso.DeleteFile markerFile, True
 On Error GoTo 0
+
+' wscript.exe exits — ZERO COM references held during transfer
+' Explorer handles everything natively via IFileOperation
