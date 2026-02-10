@@ -175,17 +175,15 @@ class MoveTo {
             fileOp.GetAnyOperationsAborted(out aborted);
             Log("Done. Aborted=" + aborted);
 
-            Marshal.ReleaseComObject(destItem);
-            if (aborted) return 3;
+            // FORCE EXIT — PerformOperations leaves COM message pump
+            // spinning at 100% CPU. OS cleans up everything on exit.
+            Environment.Exit(aborted ? 3 : 0);
 
         } catch (Exception ex) {
             Log("FATAL: " + ex.ToString());
-            return 4;
-        } finally {
-            Marshal.ReleaseComObject((object)fileOp);
+            Environment.Exit(4);
         }
 
-        Log("===== END =====");
-        return 0;
+        return 0; // unreachable, keeps compiler happy
     }
 }
