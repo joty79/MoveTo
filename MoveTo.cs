@@ -86,7 +86,6 @@ class MoveTo {
     static readonly Guid IID_IShellItem =
         new Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe");
 
-    const uint FOF_ALLOWUNDO       = 0x0040;
     const uint FOF_NOCONFIRMMKDIR  = 0x0200;
 
     // ===== Helpers =====
@@ -144,32 +143,39 @@ class MoveTo {
         Thread.Sleep(1000);
 
         // ----- Collect selected items from Explorer -----
+        // Retry up to 3 times — after cancel, Explorer may report 0 items briefly
         sourcePaths = new List<string>();
-        Type shellType = Type.GetTypeFromProgID("Shell.Application");
-        dynamic shell = Activator.CreateInstance(shellType);
-
-        try {
-            dynamic windows = shell.Windows();
-            int wcount = windows.Count;
-            for (int i = 0; i < wcount; i++) {
-                try {
-                    dynamic win = windows.Item(i);
-                    string winPath = win.Document.Folder.Self.Path;
-                    if (string.Equals(winPath, sourceParent,
-                        StringComparison.OrdinalIgnoreCase)) {
-                        dynamic items = win.Document.SelectedItems();
-                        int icount = items.Count;
-                        Log("Explorer: " + icount + " selected items");
-                        for (int j = 0; j < icount; j++) {
-                            sourcePaths.Add((string)items.Item(j).Path);
-                        }
-                        Log("Collected all paths");
-                        break;
-                    }
-                } catch { }
+        for (int attempt = 0; attempt < 3 && sourcePaths.Count == 0; attempt++) {
+            if (attempt > 0) {
+                Log("Retry " + attempt + ": waiting for Explorer selection...");
+                Thread.Sleep(1000);
             }
-        } finally {
-            Marshal.ReleaseComObject((object)shell);
+
+            Type shellType = Type.GetTypeFromProgID("Shell.Application");
+            dynamic shell = Activator.CreateInstance(shellType);
+            try {
+                dynamic windows = shell.Windows();
+                int wcount = windows.Count;
+                for (int i = 0; i < wcount; i++) {
+                    try {
+                        dynamic win = windows.Item(i);
+                        string winPath = win.Document.Folder.Self.Path;
+                        if (string.Equals(winPath, sourceParent,
+                            StringComparison.OrdinalIgnoreCase)) {
+                            dynamic items = win.Document.SelectedItems();
+                            int icount = items.Count;
+                            Log("Explorer: " + icount + " selected items");
+                            for (int j = 0; j < icount; j++) {
+                                sourcePaths.Add((string)items.Item(j).Path);
+                            }
+                            if (icount > 0) Log("Collected all paths");
+                            break;
+                        }
+                    } catch { }
+                }
+            } finally {
+                Marshal.ReleaseComObject((object)shell);
+            }
         }
 
         if (sourcePaths.Count == 0) {
@@ -186,7 +192,7 @@ class MoveTo {
         IFileOperation fileOp = (IFileOperation)Activator.CreateInstance(foType);
 
         try {
-            fileOp.SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR);
+            fileOp.SetOperationFlags(FOF_NOCONFIRMMKDIR);
 
             IShellItem destItem;
             SHCreateItemFromParsingName(destPath, IntPtr.Zero,
