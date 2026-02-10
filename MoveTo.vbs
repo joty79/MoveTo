@@ -47,7 +47,7 @@ WScript.Sleep 500
 
 ' Spawn PS1 to do native COM MoveHere (fire and forget)
 Dim cmd
-cmd = "pwsh.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""D:\Users\joty79\scripts\MoveTo\MoveTo.ps1"" """ & sourcePath & """ """ & destPath & """"
+cmd = "pwsh.exe -NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File ""D:\Users\joty79\scripts\MoveTo\MoveTo.ps1"" """ & sourcePath & """ """ & destPath & """"
 wsh.Run cmd, 0, False
 
 ' Cleanup marker
