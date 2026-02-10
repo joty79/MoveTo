@@ -1,6 +1,8 @@
-# MoveTo.ps1 - Clipboard CUT + Shell paste (fire-and-forget)
-# Reuses existing destination window if found, otherwise opens new.
-# Script exits immediately after paste — Explorer handles transfer.
+# MoveTo.ps1 - Pure SendKeys (Explorer does EVERYTHING natively)
+# Step 1: Focus source window → Ctrl+X (Explorer handles cut)
+# Step 2: Navigate address bar to destination → Enter
+# Step 3: Ctrl+V (Explorer handles paste)
+# Script exits immediately — ZERO clipboard manipulation from our side.
 
 param(
     [string]$SourcePath,
@@ -9,7 +11,6 @@ param(
 
 Add-Type -AssemblyName System.Windows.Forms
 
-# P/Invoke for window focus
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -33,82 +34,67 @@ Log "PID:    $PID"
 $shell = New-Object -ComObject Shell.Application
 $sourceParent = Split-Path $SourcePath -Parent
 
-# ===== Read ALL selected items from source Explorer window =====
-$selectedPaths = [System.Collections.Generic.List[string]]::new()
-
+# ===== Find source Explorer window =====
+$sourceWin = $null
 foreach ($win in $shell.Windows()) {
     try {
-        $winPath = $win.Document.Folder.Self.Path
-        if ($winPath -eq $sourceParent) {
-            foreach ($item in $win.Document.SelectedItems()) {
-                $selectedPaths.Add($item.Path)
-            }
+        if ($win.Document.Folder.Self.Path -eq $sourceParent) {
+            $sourceWin = $win
             break
         }
     } catch { }
 }
 
-if ($selectedPaths.Count -eq 0) {
-    $selectedPaths.Add($SourcePath)
+if (-not $sourceWin) {
+    Log "ERROR: Source window not found"
+    exit 1
 }
 
-Log "Selected: $($selectedPaths.Count) items"
+$hwnd = [IntPtr]$sourceWin.HWND
+Log "Source window found: HWND=$hwnd"
 
-# ===== Clipboard CUT (same as Ctrl+X) =====
-$files = New-Object System.Collections.Specialized.StringCollection
-foreach ($p in $selectedPaths) { [void]$files.Add($p) }
+# ===== Step 1: Focus source window + Ctrl+X (EXPLORER cuts natively) =====
+[WinFocus]::ShowWindow($hwnd, 9) | Out-Null
+[WinFocus]::SetForegroundWindow($hwnd) | Out-Null
+Start-Sleep -Milliseconds 300
 
-$data = New-Object System.Windows.Forms.DataObject
-$data.SetFileDropList($files)
-$data.SetData("Preferred DropEffect", [System.IO.MemoryStream]::new([byte[]]@(2,0,0,0)))
-[System.Windows.Forms.Clipboard]::SetDataObject($data, $true)
+[System.Windows.Forms.SendKeys]::SendWait("^x")
+Start-Sleep -Milliseconds 300
+Log "Ctrl+X sent (Explorer native cut)"
 
-Log "Clipboard CUT done"
+# ===== Step 2: Navigate to destination via address bar =====
+# Alt+D = focus address bar (standard Windows shortcut)
+[System.Windows.Forms.SendKeys]::SendWait("%d")
+Start-Sleep -Milliseconds 300
 
-# ===== Find existing dest window OR open new =====
-$destWin = $null
-foreach ($win in $shell.Windows()) {
+# Escape SendKeys special chars in path: + ^ % ~ ( ) { }
+$escapedPath = $DestPath -replace '([+^%~{}()])', '{$1}'
+[System.Windows.Forms.SendKeys]::SendWait($escapedPath)
+Start-Sleep -Milliseconds 200
+
+[System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+Log "Address bar navigation sent: $DestPath"
+
+# Wait for navigation to complete (path changes)
+$sw = [System.Diagnostics.Stopwatch]::StartNew()
+while ($sw.ElapsedMilliseconds -lt 15000) {
     try {
-        if ($win.Document.Folder.Self.Path -eq $DestPath) {
-            $destWin = $win
-            break
-        }
+        if ($sourceWin.Document.Folder.Self.Path -eq $DestPath) { break }
     } catch { }
+    Start-Sleep -Milliseconds 200
 }
+Log "Navigation done in $($sw.ElapsedMilliseconds)ms"
 
-if ($destWin) {
-    # Destination already open — just focus it
-    Log "Destination already open, focusing"
-    $hwnd = [IntPtr]$destWin.HWND
-    [WinFocus]::ShowWindow($hwnd, 9) | Out-Null
-    [WinFocus]::SetForegroundWindow($hwnd) | Out-Null
-    Start-Sleep -Milliseconds 400
-} else {
-    # Open destination in new Explorer window
-    Log "Opening destination in new window"
-    $shell.Open($DestPath)
-    Start-Sleep -Milliseconds 1200
+Start-Sleep -Milliseconds 400
 
-    # Find and focus the new window
-    foreach ($win in $shell.Windows()) {
-        try {
-            if ($win.Document.Folder.Self.Path -eq $DestPath) {
-                $hwnd = [IntPtr]$win.HWND
-                [WinFocus]::SetForegroundWindow($hwnd) | Out-Null
-                break
-            }
-        } catch { }
-    }
-    Start-Sleep -Milliseconds 300
-}
+# ===== Step 3: Ctrl+V (EXPLORER pastes natively) =====
+[WinFocus]::SetForegroundWindow($hwnd) | Out-Null
+Start-Sleep -Milliseconds 200
 
-Log "Window ready, sending Ctrl+V"
-
-# ===== Paste — fire and forget =====
 [System.Windows.Forms.SendKeys]::SendWait("^v")
+Log "Ctrl+V sent (Explorer native paste)"
 
-Log "Paste sent"
 Log "===== END ====="
 
-# EXIT — Explorer handles transfer in background
+# EXIT — Explorer handles transfer in background via IFileOperation
 try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null } catch { }
