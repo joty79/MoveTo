@@ -25,7 +25,6 @@ using System.Runtime.InteropServices;
 
 public class NativeMove {
     private const uint FO_MOVE = 0x0001;
-    private const ushort FOF_ALLOWUNDO  = 0x0040;
     private const ushort FOF_NOCONFIRMMKDIR = 0x0200;
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -57,7 +56,7 @@ public class NativeMove {
             op.wFunc  = FO_MOVE;
             op.pFrom  = pFrom;
             op.pTo    = pTo;
-            op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR;
+            op.fFlags = FOF_NOCONFIRMMKDIR;
             return SHFileOperation(ref op);
         } finally {
             Marshal.FreeHGlobal(pFrom);
