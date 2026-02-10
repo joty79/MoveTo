@@ -57,6 +57,16 @@ $data.SetData("Preferred DropEffect", [System.IO.MemoryStream]::new([byte[]]@(2,
 
 Log "Clipboard CUT done"
 
+# P/Invoke for window focus
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class WinFocus {
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+}
+"@
+
 # ===== Navigate SAME window to destination (NO new window!) =====
 if ($sourceWin) {
     $sourceWin.Navigate2($DestPath)
@@ -69,8 +79,13 @@ if ($sourceWin) {
         } catch { }
         Start-Sleep -Milliseconds 100
     }
-    Start-Sleep -Milliseconds 300
-    Log "Navigated to destination in $($sw.ElapsedMilliseconds)ms"
+
+    # Bring Explorer window to foreground
+    $hwnd = [IntPtr]$sourceWin.HWND
+    [WinFocus]::ShowWindow($hwnd, 9) | Out-Null   # SW_RESTORE
+    [WinFocus]::SetForegroundWindow($hwnd) | Out-Null
+    Start-Sleep -Milliseconds 400
+    Log "Navigated + focused in $($sw.ElapsedMilliseconds)ms"
 } else {
     # Fallback: open new window (only if source window not found)
     Log "No source window found, opening new"
