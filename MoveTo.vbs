@@ -43,11 +43,11 @@ If destPath = "" Or Not fso.FolderExists(destPath) Then
 End If
 
 ' Wait for all other VBS instances to see the marker and exit
-WScript.Sleep 300
+WScript.Sleep 500
 
-' Spawn PS1 to do native clipboard CUT + paste (fire and forget)
+' Spawn PS1 to do native COM MoveHere (fire and forget)
 Dim cmd
-cmd = "pwsh.exe -NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File ""D:\Users\joty79\scripts\MoveTo\MoveTo.ps1"" """ & sourcePath & """ """ & destPath & """"
+cmd = "pwsh.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""D:\Users\joty79\scripts\MoveTo\MoveTo.ps1"" """ & sourcePath & """ """ & destPath & """"
 wsh.Run cmd, 0, False
 
 ' Cleanup marker
