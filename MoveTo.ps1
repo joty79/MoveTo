@@ -6,6 +6,18 @@ param(
     [string]$DestPath
 )
 
+# ===== Debug Log =====
+$logFile = "$env:TEMP\MoveTo_debug.log"
+function Log($msg) {
+    $ts = Get-Date -Format "HH:mm:ss.fff"
+    "$ts | $msg" | Out-File -FilePath $logFile -Append -Encoding utf8
+}
+
+Log "===== START ====="
+Log "Source: $SourcePath"
+Log "Dest:   $DestPath"
+Log "PID:    $PID"
+
 # ===== Native SHFileOperation P/Invoke =====
 Add-Type -TypeDefinition @"
 using System;
@@ -34,7 +46,6 @@ public class NativeMove {
     private static extern int SHFileOperation(ref SHFILEOPSTRUCT lpFileOp);
 
     public static int Move(string[] sources, string destination) {
-        // SHFileOperation needs null-separated, double-null terminated paths
         string from = string.Join("\0", sources) + "\0";
         string to   = destination + "\0";
 
@@ -55,6 +66,8 @@ public class NativeMove {
     }
 }
 "@
+
+Log "Add-Type done"
 
 # ===== Read ALL selected items from Explorer =====
 $shell = New-Object -ComObject Shell.Application
@@ -77,12 +90,17 @@ if ($selectedPaths.Count -eq 0) {
     $selectedPaths.Add($SourcePath)
 }
 
+Log "Selected items: $($selectedPaths.Count)"
+
 # Release COM before starting move
 try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null } catch { }
 $shell = $null
 [System.GC]::Collect()
 
-# ===== Move — native dialog, no Explorer window, cancel = clean exit =====
-[NativeMove]::Move($selectedPaths.ToArray(), $DestPath)
+Log "COM released. Calling SHFileOperation..."
 
-# Script exits cleanly when SHFileOperation returns (or user cancels)
+# ===== Move — native dialog, no Explorer window, cancel = clean exit =====
+$result = [NativeMove]::Move($selectedPaths.ToArray(), $DestPath)
+
+Log "SHFileOperation returned: $result"
+Log "===== END ====="
