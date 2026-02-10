@@ -1,36 +1,72 @@
-# MoveTo.ps1 - Clipboard CUT + smart paste (fire-and-forget)
-# Reads selected items, clipboard CUT, finds/opens destination, Ctrl+V, EXIT.
-# Script exits immediately — Explorer handles transfer in background.
+# MoveTo.ps1 - SHFileOperation (native move, no Explorer window needed)
+# ONE batch operation, native dialog + conflicts, cancel works, no ghost process.
 
 param(
     [string]$SourcePath,
     [string]$DestPath
 )
 
-Add-Type -AssemblyName System.Windows.Forms
-
-# P/Invoke for window focus
-Add-Type @"
+# ===== Native SHFileOperation P/Invoke =====
+Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
-public class WinFocus {
-    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+public class NativeMove {
+    private const uint FO_MOVE = 0x0001;
+    private const ushort FOF_ALLOWUNDO  = 0x0040;
+    private const ushort FOF_NOCONFIRMMKDIR = 0x0200;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct SHFILEOPSTRUCT {
+        public IntPtr hwnd;
+        public uint   wFunc;
+        public IntPtr pFrom;
+        public IntPtr pTo;
+        public ushort fFlags;
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool   fAnyOperationsAborted;
+        public IntPtr hNameMappings;
+        [MarshalAs(UnmanagedType.LPWStr)]
+        public string lpszProgressTitle;
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern int SHFileOperation(ref SHFILEOPSTRUCT lpFileOp);
+
+    public static int Move(string[] sources, string destination) {
+        // SHFileOperation needs null-separated, double-null terminated paths
+        string from = string.Join("\0", sources) + "\0";
+        string to   = destination + "\0";
+
+        IntPtr pFrom = Marshal.StringToHGlobalUni(from);
+        IntPtr pTo   = Marshal.StringToHGlobalUni(to);
+
+        try {
+            SHFILEOPSTRUCT op = new SHFILEOPSTRUCT();
+            op.wFunc  = FO_MOVE;
+            op.pFrom  = pFrom;
+            op.pTo    = pTo;
+            op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR;
+            return SHFileOperation(ref op);
+        } finally {
+            Marshal.FreeHGlobal(pFrom);
+            Marshal.FreeHGlobal(pTo);
+        }
+    }
 }
 "@
 
+# ===== Read ALL selected items from Explorer =====
 $shell = New-Object -ComObject Shell.Application
 $sourceParent = Split-Path $SourcePath -Parent
-
-# ===== Read ALL selected items from Explorer =====
-$selectedPaths = @()
+$selectedPaths = [System.Collections.Generic.List[string]]::new()
 
 foreach ($win in $shell.Windows()) {
     try {
         $winPath = $win.Document.Folder.Self.Path
         if ($winPath -eq $sourceParent) {
             foreach ($item in $win.Document.SelectedItems()) {
-                $selectedPaths += $item.Path
+                $selectedPaths.Add($item.Path)
             }
             break
         }
@@ -38,48 +74,15 @@ foreach ($win in $shell.Windows()) {
 }
 
 if ($selectedPaths.Count -eq 0) {
-    $selectedPaths = @($SourcePath)
+    $selectedPaths.Add($SourcePath)
 }
 
-# ===== Clipboard CUT (same as Ctrl+X) =====
-$files = New-Object System.Collections.Specialized.StringCollection
-foreach ($p in $selectedPaths) { [void]$files.Add($p) }
-
-$data = New-Object System.Windows.Forms.DataObject
-$data.SetFileDropList($files)
-
-$moveBytes = [byte[]]@(2, 0, 0, 0)
-$stream = New-Object System.IO.MemoryStream(, $moveBytes)
-$data.SetData("Preferred DropEffect", $stream)
-
-[System.Windows.Forms.Clipboard]::SetDataObject($data, $true)
-
-# ===== Find existing destination window OR open new =====
-$destWin = $null
-
-foreach ($win in $shell.Windows()) {
-    try {
-        if ($win.Document.Folder.Self.Path -eq $DestPath) {
-            $destWin = $win
-            break
-        }
-    } catch { }
-}
-
-if ($destWin) {
-    # Destination already open — just bring to front (NO new window)
-    $hwnd = [IntPtr]$destWin.HWND
-    [WinFocus]::ShowWindow($hwnd, 9) | Out-Null   # SW_RESTORE
-    [WinFocus]::SetForegroundWindow($hwnd) | Out-Null
-    Start-Sleep -Milliseconds 400
-} else {
-    # Not open — open new Explorer window
-    $shell.Open($DestPath)
-    Start-Sleep -Milliseconds 900
-}
-
-# ===== Paste (Ctrl+V) — fire and forget =====
-[System.Windows.Forms.SendKeys]::SendWait("^v")
-
-# ===== EXIT IMMEDIATELY — no blocking, no ghost process =====
+# Release COM before starting move
 try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null } catch { }
+$shell = $null
+[System.GC]::Collect()
+
+# ===== Move — native dialog, no Explorer window, cancel = clean exit =====
+[NativeMove]::Move($selectedPaths.ToArray(), $DestPath)
+
+# Script exits cleanly when SHFileOperation returns (or user cancels)
