@@ -3,5 +3,9 @@ Powershell/
 .antigravity/
 *.log
 
+archive/
+update/
+.vscode/
+
 destinations/*
 !destinations/.gitkeep
