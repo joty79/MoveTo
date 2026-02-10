@@ -1,39 +1,56 @@
-# MoveTo.ps1 - Pure COM MoveHere (single batch operation)
-# Reads ALL selected items from Explorer via COM, passes the entire
-# FolderItems collection to ONE MoveHere call. Cancel = cancel ALL.
+# MoveTo.ps1 - Clipboard CUT + COM InvokeVerb paste
+# ONE batch operation, ONE dialog, Cancel stops ALL, no new Explorer window.
 
 param(
     [string]$SourcePath,
     [string]$DestPath
 )
 
+Add-Type -AssemblyName System.Windows.Forms
+
 $shell = New-Object -ComObject Shell.Application
 $sourceParent = Split-Path $SourcePath -Parent
 
-# ===== Find Explorer window → get SelectedItems as COM collection =====
-$selectedItems = $null
+# ===== Read ALL selected items from Explorer =====
+$selectedPaths = @()
 
 foreach ($win in $shell.Windows()) {
     try {
         $winPath = $win.Document.Folder.Self.Path
         if ($winPath -eq $sourceParent) {
-            $selectedItems = $win.Document.SelectedItems()
+            foreach ($item in $win.Document.SelectedItems()) {
+                $selectedPaths += $item.Path
+            }
             break
         }
     } catch { }
 }
 
-# ===== MoveHere — ONE call, ONE dialog =====
+if ($selectedPaths.Count -eq 0) {
+    $selectedPaths = @($SourcePath)
+}
+
+# ===== Clipboard CUT (same as Ctrl+X) =====
+$files = New-Object System.Collections.Specialized.StringCollection
+foreach ($p in $selectedPaths) { [void]$files.Add($p) }
+
+$data = New-Object System.Windows.Forms.DataObject
+$data.SetFileDropList($files)
+
+# Preferred DropEffect = MOVE (2) = CUT
+$moveBytes = [byte[]]@(2, 0, 0, 0)
+$stream = New-Object System.IO.MemoryStream(, $moveBytes)
+$data.SetData("Preferred DropEffect", $stream)
+
+[System.Windows.Forms.Clipboard]::SetDataObject($data, $true)
+
+# ===== Paste to destination via COM (NO new window) =====
 $destFolder = $shell.NameSpace($DestPath)
 
-if (-not $destFolder) { exit 1 }
-
-if ($selectedItems -and $selectedItems.Count -gt 0) {
-    # Batch: entire FolderItems collection → one operation
-    $destFolder.MoveHere($selectedItems, 0x0)
-} else {
-    # Fallback: single path from args
-    $destFolder.MoveHere($SourcePath, 0x0)
+if ($destFolder) {
+    # InvokeVerb("paste") = same as right-click folder → Paste
+    # ONE operation, native dialog, Cancel stops ALL
+    $destFolder.Self.InvokeVerb("paste")
 }
 
 # ===== Cleanup =====
