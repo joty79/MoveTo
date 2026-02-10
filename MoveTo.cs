@@ -1,42 +1,107 @@
+// MoveTo.cs — Uses IFileOperation COM API (Vista+)
+// Handles 86k+ files in ONE operation with ONE progress dialog.
+// SHFileOperation crashed at ~20k files due to buffer limits.
+
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
-using System.Threading;
 
 class MoveTo {
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    struct SHFILEOPSTRUCT {
-        public IntPtr hwnd;
-        public uint wFunc;
-        public IntPtr pFrom;
-        public IntPtr pTo;
-        public ushort fFlags;
-        [MarshalAs(UnmanagedType.Bool)]
-        public bool fAnyOperationsAborted;
-        public IntPtr hNameMappings;
-        [MarshalAs(UnmanagedType.LPWStr)]
-        public string lpszProgressTitle;
+
+    // ===== COM Interfaces =====
+
+    [ComImport, Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IShellItem {
+        void BindToHandler(IntPtr pbc,
+            [MarshalAs(UnmanagedType.LPStruct)] Guid bhid,
+            [MarshalAs(UnmanagedType.LPStruct)] Guid riid,
+            out IntPtr ppv);
+        void GetParent(out IShellItem ppsi);
+        void GetDisplayName(uint sigdnName,
+            [MarshalAs(UnmanagedType.LPWStr)] out string ppszName);
+        void GetAttributes(uint sfgaoMask, out uint psfgaoAttribs);
+        void Compare(IShellItem psi, uint hint, out int piOrder);
     }
 
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
-    static extern int SHFileOperation(ref SHFILEOPSTRUCT op);
+    [ComImport, Guid("947aab5f-0a5c-4c13-b4d6-4bf7836fc9f8")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IFileOperation {
+        void Advise(IntPtr pfops, out uint pdwCookie);
+        void Unadvise(uint dwCookie);
+        void SetOperationFlags(uint dwOperationFlags);
+        void SetProgressMessage([MarshalAs(UnmanagedType.LPWStr)] string pszMessage);
+        void SetProgressDialog(IntPtr popd);
+        void SetProperties(IntPtr pproparray);
+        void SetOwnerWindow(IntPtr hwndOwner);
+        void ApplyPropertiesToItem(IShellItem psiItem);
+        void ApplyPropertiesToItems(IntPtr punkItems);
+        void RenameItem(IShellItem psiItem,
+            [MarshalAs(UnmanagedType.LPWStr)] string pszNewName, IntPtr pfopsItem);
+        void RenameItems(IntPtr pUnkItems,
+            [MarshalAs(UnmanagedType.LPWStr)] string pszNewName);
+        void MoveItem(IShellItem psiItem, IShellItem psiDestinationFolder,
+            [MarshalAs(UnmanagedType.LPWStr)] string pszNewName, IntPtr pfopsItem);
+        void MoveItems(IntPtr punkItems, IShellItem psiDestinationFolder);
+        void CopyItem(IShellItem psiItem, IShellItem psiDestinationFolder,
+            [MarshalAs(UnmanagedType.LPWStr)] string pszNewName, IntPtr pfopsItem);
+        void CopyItems(IntPtr punkItems, IShellItem psiDestinationFolder);
+        void DeleteItem(IShellItem psiItem, IntPtr pfopsItem);
+        void DeleteItems(IntPtr punkItems);
+        void NewItem(IShellItem psiDestinationFolder, uint dwFileAttributes,
+            [MarshalAs(UnmanagedType.LPWStr)] string pszName,
+            [MarshalAs(UnmanagedType.LPWStr)] string pszTemplateName,
+            IntPtr pfopsItem);
+        void PerformOperations();
+        void GetAnyOperationsAborted(
+            [MarshalAs(UnmanagedType.Bool)] out bool pfAnyOperationsAborted);
+    }
 
-    const uint FO_MOVE = 0x0001;
-    // FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR
-    // ALLOWUNDO = Undo-capable move (recycle bin aware)
-    // NOCONFIRMMKDIR = auto-create dest subdirs without asking
-    const ushort FOF_FLAGS = 0x0040 | 0x0200;
+    // ===== P/Invoke =====
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+    static extern void SHCreateItemFromParsingName(
+        string pszPath, IntPtr pbc,
+        [MarshalAs(UnmanagedType.LPStruct)] Guid riid,
+        [MarshalAs(UnmanagedType.Interface)] out IShellItem ppv);
+
+    // ===== Constants =====
+
+    static readonly Guid CLSID_FileOperation =
+        new Guid("3ad05575-8857-4850-9277-11b85bdb8e09");
+    static readonly Guid IID_IShellItem =
+        new Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe");
+
+    const uint FOF_ALLOWUNDO     = 0x0040;
+    const uint FOF_NOCONFIRMMKDIR = 0x0200;
+
+    // ===== Logging =====
+
+    static string logFile = Path.Combine(
+        Environment.GetEnvironmentVariable("TEMP") ?? ".", "MoveTo_debug.log");
+
+    static void Log(string msg) {
+        try {
+            File.AppendAllText(logFile,
+                DateTime.Now.ToString("HH:mm:ss.fff") + " | " + msg + "\r\n");
+        } catch { }
+    }
+
+    // ===== Main =====
 
     [STAThread]
     static int Main(string[] args) {
         if (args.Length < 2) return 1;
         string sourcePath = args[0];
-        string destPath = args[1];
+        string destPath   = args[1];
         string sourceParent = Path.GetDirectoryName(sourcePath);
 
-        // ===== Collect selected items from Explorer via COM =====
+        Log("===== START =====");
+        Log("Source: " + sourcePath);
+        Log("Dest:   " + destPath);
+
+        // ----- Step 1: Collect selected items from Explorer -----
         var sourcePaths = new List<string>();
         Type shellType = Type.GetTypeFromProgID("Shell.Application");
         dynamic shell = Activator.CreateInstance(shellType);
@@ -52,9 +117,11 @@ class MoveTo {
                         StringComparison.OrdinalIgnoreCase)) {
                         dynamic items = win.Document.SelectedItems();
                         int icount = items.Count;
+                        Log("Explorer: " + icount + " selected items");
                         for (int j = 0; j < icount; j++) {
                             sourcePaths.Add((string)items.Item(j).Path);
                         }
+                        Log("Collected all paths");
                         break;
                     }
                 } catch { }
@@ -63,43 +130,62 @@ class MoveTo {
             Marshal.ReleaseComObject((object)shell);
         }
 
-        // Fallback: if no Explorer window found, use the arg
-        if (sourcePaths.Count == 0) sourcePaths.Add(sourcePath);
+        if (sourcePaths.Count == 0) {
+            sourcePaths.Add(sourcePath);
+            Log("Fallback: single arg path");
+        }
 
-        // Release COM refs before file operation
+        Log("Total items: " + sourcePaths.Count);
         GC.Collect();
         GC.WaitForPendingFinalizers();
 
-        // ===== Safety timeout: force exit after 5 minutes =====
-        var timeout = new Thread(() => {
-            Thread.Sleep(300000); // 5 min
-            Environment.Exit(2);
-        });
-        timeout.IsBackground = true;
-        timeout.Start();
+        // ----- Step 2: IFileOperation — queue all, execute once -----
+        Type foType = Type.GetTypeFromCLSID(CLSID_FileOperation);
+        IFileOperation fileOp = (IFileOperation)Activator.CreateInstance(foType);
 
-        // ===== SHFileOperation — SYNCHRONOUS, returns when done =====
-        // Double-null terminated strings as required by SHFileOperation
-        string from = string.Join("\0", sourcePaths) + "\0";
-        string to = destPath + "\0";
-        IntPtr pFrom = Marshal.StringToHGlobalUni(from);
-        IntPtr pTo = Marshal.StringToHGlobalUni(to);
-
-        int result;
         try {
-            var op = new SHFILEOPSTRUCT();
-            op.wFunc = FO_MOVE;
-            op.pFrom = pFrom;
-            op.pTo = pTo;
-            op.fFlags = FOF_FLAGS;
-            result = SHFileOperation(ref op);
+            fileOp.SetOperationFlags(FOF_ALLOWUNDO | FOF_NOCONFIRMMKDIR);
 
-            if (op.fAnyOperationsAborted) return 3; // user cancelled
+            IShellItem destItem;
+            SHCreateItemFromParsingName(destPath, IntPtr.Zero,
+                IID_IShellItem, out destItem);
+
+            int queued = 0;
+            int skipped = 0;
+            foreach (string path in sourcePaths) {
+                try {
+                    IShellItem srcItem;
+                    SHCreateItemFromParsingName(path, IntPtr.Zero,
+                        IID_IShellItem, out srcItem);
+                    fileOp.MoveItem(srcItem, destItem, null, IntPtr.Zero);
+                    Marshal.ReleaseComObject(srcItem);
+                    queued++;
+                } catch (Exception ex) {
+                    Log("SKIP: " + path + " | " + ex.Message);
+                    skipped++;
+                }
+            }
+
+            Log("Queued: " + queued + " | Skipped: " + skipped);
+            Log("PerformOperations starting...");
+
+            fileOp.PerformOperations();
+
+            bool aborted;
+            fileOp.GetAnyOperationsAborted(out aborted);
+            Log("Done. Aborted=" + aborted);
+
+            Marshal.ReleaseComObject(destItem);
+            if (aborted) return 3;
+
+        } catch (Exception ex) {
+            Log("FATAL: " + ex.ToString());
+            return 4;
         } finally {
-            Marshal.FreeHGlobal(pFrom);
-            Marshal.FreeHGlobal(pTo);
+            Marshal.ReleaseComObject((object)fileOp);
         }
 
-        return result;
+        Log("===== END =====");
+        return 0;
     }
 }
