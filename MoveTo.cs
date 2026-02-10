@@ -1,6 +1,6 @@
-// MoveTo.cs — IFileOperation + Watchdog
-// PerformOperations() hangs in COM message pump after dialog closes.
-// Watchdog thread detects dialog close → Environment.Exit(0).
+// MoveTo.cs — IFileOperation + Mutex + Watchdog
+// Named mutex: only one instance runs (even if VBS marker races)
+// Watchdog: exits when (a) dialog closes OR (b) source files gone
 
 using System;
 using System.Collections.Generic;
@@ -86,7 +86,7 @@ class MoveTo {
     static readonly Guid IID_IShellItem =
         new Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe");
 
-    const uint FOF_ALLOWUNDO      = 0x0040;
+    const uint FOF_ALLOWUNDO       = 0x0040;
     const uint FOF_NOCONFIRMMKDIR  = 0x0200;
 
     // ===== Helpers =====
@@ -116,6 +116,8 @@ class MoveTo {
         return found;
     }
 
+    static List<string> sourcePaths;
+
     // ===== Main =====
 
     [STAThread]
@@ -125,12 +127,24 @@ class MoveTo {
         string destPath     = args[1];
         string sourceParent = Path.GetDirectoryName(sourcePath);
 
+        // ===== MUTEX: only one instance runs =====
+        bool createdNew;
+        var mutex = new Mutex(true, @"Global\MoveTo_Operation", out createdNew);
+        if (!createdNew) {
+            // Another instance is already running
+            return 0;
+        }
+
         Log("===== START =====");
         Log("Source: " + sourcePath);
         Log("Dest:   " + destPath);
+        Log("PID:    " + Process.GetCurrentProcess().Id);
+
+        // Wait for all context menu invocations to settle
+        Thread.Sleep(3000);
 
         // ----- Collect selected items from Explorer -----
-        var sourcePaths = new List<string>();
+        sourcePaths = new List<string>();
         Type shellType = Type.GetTypeFromProgID("Shell.Application");
         dynamic shell = Activator.CreateInstance(shellType);
 
@@ -194,36 +208,50 @@ class MoveTo {
 
             Log("Queued: " + queued);
 
-            // ===== WATCHDOG: force exit when dialog closes =====
-            // PerformOperations() HANGS after completion (COM message pump).
-            // This thread detects dialog close → Environment.Exit.
+            // ===== WATCHDOG =====
+            // PerformOperations() hangs after completion.
+            // Two exit conditions: dialog closes OR source files gone.
             var watchdog = new Thread(() => {
                 bool dialogSeen = false;
                 DateTime start = DateTime.UtcNow;
-                Thread.Sleep(3000);
+                Thread.Sleep(5000);
 
                 while (true) {
-                    Thread.Sleep(1000);
-                    bool hasWin = HasVisibleWindow();
-
-                    if (hasWin) {
-                        dialogSeen = true;
-                    }
-                    else if (dialogSeen) {
-                        // Dialog appeared then closed = done or cancelled
-                        Log("Watchdog: dialog closed → exit");
-                        Thread.Sleep(500);
-                        Environment.Exit(0);
-                    }
-
-                    // No dialog after 30s = instant transfer, force exit
+                    Thread.Sleep(2000);
                     double elapsed = (DateTime.UtcNow - start).TotalSeconds;
-                    if (!dialogSeen && elapsed > 30) {
-                        Log("Watchdog: no dialog after 30s → exit");
+
+                    // Check dialog
+                    bool hasWin = HasVisibleWindow();
+                    if (hasWin) dialogSeen = true;
+
+                    // Exit 1: dialog was shown then closed
+                    if (dialogSeen && !hasWin) {
+                        Log("Watchdog: dialog closed → exit");
+                        Thread.Sleep(1000);
                         Environment.Exit(0);
                     }
 
-                    // Hard timeout: 30 minutes
+                    // Exit 2: all source files gone (transfer complete)
+                    bool allGone = true;
+                    foreach (string p in sourcePaths) {
+                        if (File.Exists(p) || Directory.Exists(p)) {
+                            allGone = false;
+                            break;
+                        }
+                    }
+                    if (allGone) {
+                        Log("Watchdog: all source files gone → exit");
+                        Thread.Sleep(3000);
+                        Environment.Exit(0);
+                    }
+
+                    // Exit 3: no dialog after 60s = instant transfer
+                    if (!dialogSeen && elapsed > 60) {
+                        Log("Watchdog: no dialog after 60s → exit");
+                        Environment.Exit(0);
+                    }
+
+                    // Exit 4: hard timeout 30 min
                     if (elapsed > 1800) {
                         Log("Watchdog: 30min timeout → exit");
                         Environment.Exit(2);
@@ -236,7 +264,7 @@ class MoveTo {
             Log("PerformOperations starting...");
             fileOp.PerformOperations();
 
-            // If we ever get here (unlikely), exit cleanly
+            // If PerformOperations actually returns
             Log("PerformOperations returned!");
             Environment.Exit(0);
 

@@ -1,6 +1,6 @@
-' MoveTo.vbs - Marker check + launch compiled exe
+' MoveTo.vbs - Launch MoveTo.exe with marker deduplication
 ' Only first instance runs, others exit immediately.
-' Stale markers (>5 min old) are auto-cleaned.
+' Stale markers (>5 min) auto-cleaned after crashes.
 
 Option Explicit
 
@@ -18,7 +18,7 @@ Set fso = CreateObject("Scripting.FileSystemObject")
 ' Marker: only first instance proceeds
 markerFile = wsh.ExpandEnvironmentStrings("%TEMP%") & "\MoveTo_" & destName & ".marker"
 
-' Clean stale markers (older than 5 minutes = stuck from crash)
+' Clean stale markers (older than 5 min = stuck from crash)
 If fso.FileExists(markerFile) Then
     Dim mFile, age
     Set mFile = fso.GetFile(markerFile)
@@ -51,15 +51,16 @@ If destPath = "" Or Not fso.FolderExists(destPath) Then
     WScript.Quit 1
 End If
 
-' Wait for other instances to exit
-WScript.Sleep 500
+' Wait for other VBS instances to see marker and exit
+WScript.Sleep 1500
 
-' Delete marker BEFORE launching exe — exe handles its own lifetime
+' Launch exe and WAIT for it to finish
+' Exe has its own watchdog + named mutex for safety
+Dim cmd
+cmd = """D:\Users\joty79\scripts\MoveTo\MoveTo.exe"" """ & sourcePath & """ """ & destPath & """"
+wsh.Run cmd, 0, True
+
+' Cleanup marker after exe exits
 On Error Resume Next
 fso.DeleteFile markerFile, True
 On Error GoTo 0
-
-' Launch compiled exe (proper STAThread + message pump)
-Dim cmd
-cmd = """D:\Users\joty79\scripts\MoveTo\MoveTo.exe"" """ & sourcePath & """ """ & destPath & """"
-wsh.Run cmd, 0, False
