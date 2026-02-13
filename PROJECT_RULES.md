@@ -555,6 +555,20 @@
 - Files affected: `rcopySingle.ps1`, `rcp.ps1`, `PROJECT_RULES.md`.
 - Validation/tests: SHA256 equality checks (`True` και στα δύο αρχεία) + PowerShell parser validation (`OK` και στα δύο scripts).
 
+### 2026-02-13 - Keep source folder after tokenized select-all move
+- Problem: Σε move από μέσα σε folder (select-all files/folders), το source folder μπορούσε να διαγραφεί όταν άδειαζε.
+- Root cause: Το tokenized move path χρησιμοποιεί `/MOVE` στο source directory, που μπορεί να αφαιρέσει και το root source folder όταν μείνει empty.
+- Guardrail: Μετά από successful tokenized move, αν λείπει το source directory, γίνεται explicit recreate ώστε να παραμένει άδειο.
+- Files affected: `rcp.ps1`, `PROJECT_RULES.md`.
+- Validation/tests: PowerShell parser validation (`rcp.ps1`) + runtime retest pending (select-all cut μέσα από source folder).
+
+### 2026-02-13 - Preserve source folder identity (no recreate/reorder)
+- Problem: Το recreate-after-delete workaround διατηρούσε μεν folder name, αλλά μπορούσε να αλλάζει η θέση/sort order του source folder στο Explorer.
+- Root cause: Το source root folder διαγραφόταν πρώτα από `/MOVE` και μετά ξαναδημιουργούνταν.
+- Guardrail: Στο tokenized move path δημιουργείται προσωρινό keep-root marker file στο source root και περνάει exclude (`/XF <marker>`), ώστε ο root folder να μη διαγράφεται ποτέ. Μετά το transfer ο marker αφαιρείται.
+- Files affected: `rcp.ps1`, `PROJECT_RULES.md`.
+- Validation/tests: PowerShell parser validation (`rcp.ps1`) + runtime retest pending (select-all cut, verify source folder remains same object/position).
+
 ## Entry Template
 ### YYYY-MM-DD - Short decision title
 - Problem:
