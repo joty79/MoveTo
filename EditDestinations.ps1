@@ -2,6 +2,57 @@
 
 $destinationsFolder = "D:\Users\joty79\scripts\MoveTo\destinations"
 $syncScript = "D:\Users\joty79\scripts\MoveTo\SyncMoveToMenu.ps1"
+$reservedDestinationNames = @(
+    "Add as destination",
+    "Add to destinations",
+    "[Add to destinations]",
+    "[Add as destination]",
+    "Edit destinations",
+    "[Edit destinations]"
+)
+
+function Test-IsReservedShortcut {
+    param(
+        [Parameter(Mandatory = $true)]$ShortcutFile,
+        [Parameter(Mandatory = $true)]$Shell
+    )
+
+    $baseName = $ShortcutFile.BaseName.Trim()
+    if ($reservedDestinationNames -contains $baseName) {
+        return $true
+    }
+
+    # Filename-level guard (exact legacy/system shortcut names)
+    if ($ShortcutFile.Name -match '^(?i)(Add to Destinations|Add as destination|Edit Destinations)\.lnk$') {
+        return $true
+    }
+
+    # Defensive filter: hide menu-infra shortcuts even if renamed.
+    try {
+        $lnk = $Shell.CreateShortcut($ShortcutFile.FullName)
+        $targetPath = [string]$lnk.TargetPath
+        $arguments = [string]$lnk.Arguments
+        $combinedShortcutCmd = ($targetPath + " " + $arguments)
+
+        if (
+            $combinedShortcutCmd -match "(?i)\\AddMoveToDestination\.(vbs|ps1)\b" -or
+            $combinedShortcutCmd -match "(?i)\\EditDestinations\.(vbs|ps1)\b"
+        ) {
+            return $true
+        }
+    }
+    catch {
+        # If shortcut cannot be parsed, do not hide it.
+    }
+
+    return $false
+}
+
+function Get-VisibleShortcuts {
+    $shell = New-Object -ComObject WScript.Shell
+    Get-ChildItem -Path $destinationsFolder -Filter "*.lnk" -File -ErrorAction SilentlyContinue |
+        Where-Object { -not (Test-IsReservedShortcut -ShortcutFile $_ -Shell $shell) }
+}
 
 function Read-Key {
     $key = [Console]::ReadKey($true)
@@ -18,7 +69,7 @@ function Show-Menu {
     Write-Host "  ========================================" -ForegroundColor Cyan
     Write-Host ""
     
-    $shortcuts = Get-ChildItem -Path $destinationsFolder -Filter "*.lnk" -File -ErrorAction SilentlyContinue
+    $shortcuts = Get-VisibleShortcuts
     $shell = New-Object -ComObject WScript.Shell
     
     if (-not $shortcuts -or $shortcuts.Count -eq 0) {

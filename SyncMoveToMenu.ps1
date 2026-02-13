@@ -2,8 +2,18 @@
 
 $destinationsFolder = "D:\Users\joty79\scripts\MoveTo\destinations"
 
-$regPathFiles = "Registry::HKEY_CURRENT_USER\Software\Classes\*\shell\MoveToCustom\shell"
-$regPathDirs = "Registry::HKEY_CURRENT_USER\Software\Classes\Directory\shell\MoveToCustom\shell"
+$menuRootName = "Z_MoveTo"
+$legacyMenuRootName = "MoveToCustom"
+
+$regPathFiles = "Registry::HKEY_CURRENT_USER\Software\Classes\*\shell\$menuRootName\shell"
+$regPathDirs = "Registry::HKEY_CURRENT_USER\Software\Classes\Directory\shell\$menuRootName\shell"
+$legacyRegPathFiles = "Registry::HKEY_CURRENT_USER\Software\Classes\*\shell\$legacyMenuRootName\shell"
+$legacyRegPathDirs = "Registry::HKEY_CURRENT_USER\Software\Classes\Directory\shell\$legacyMenuRootName\shell"
+$reservedShortcutNames = @(
+    "add as destination",
+    "add to destinations",
+    "edit destinations"
+)
 
 Write-Host "`n=== Syncing Move To Menu ===" -ForegroundColor Cyan
 
@@ -14,8 +24,8 @@ if (-not $shortcuts) {
     exit
 }
 
-# Clear old dest_ entries
-foreach ($regPath in @($regPathFiles, $regPathDirs)) {
+# Clear old dest_ entries (active + legacy root for safe migration)
+foreach ($regPath in @($regPathFiles, $regPathDirs, $legacyRegPathFiles, $legacyRegPathDirs)) {
     if (Test-Path -LiteralPath $regPath) {
         Get-ChildItem -LiteralPath $regPath -ErrorAction SilentlyContinue | Where-Object {
             $_.PSChildName -like "dest_*"
@@ -30,13 +40,29 @@ $count = 0
 
 foreach ($sc in $shortcuts) {
     $name = $sc.BaseName
+    $normalizedName = (($name -replace '\s+', ' ').Trim()).ToLowerInvariant()
+
+    # Never sync menu-infrastructure shortcuts as normal destinations.
+    if ($reservedShortcutNames -contains $normalizedName) {
+        continue
+    }
+
     $safeName = $name -replace '[^a-zA-Z0-9]', '_'
     $keyName = "dest_$safeName"
     
     # Read shortcut
     $lnk = $shell.CreateShortcut($sc.FullName)
     $targetPath = $lnk.TargetPath
+    $arguments = [string]$lnk.Arguments
     $iconFromLnk = $lnk.IconLocation
+
+    $combinedShortcutCmd = ([string]$targetPath + " " + $arguments)
+    if (
+        $combinedShortcutCmd -match "(?i)\\AddMoveToDestination\.(vbs|ps1)\b" -or
+        $combinedShortcutCmd -match "(?i)\\EditDestinations\.(vbs|ps1)\b"
+    ) {
+        continue
+    }
     
     # Determine icon
     $icon = "shell32.dll,3"  # Default Windows folder icon
