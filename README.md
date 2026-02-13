@@ -1,87 +1,64 @@
-# Move To Utility 🚀
-**A "Send To" clone that MOVES files instead of copying them.**
+# Move To Utility
 
-Windows has a built-in "Send To" menu, but it creates copies. **MoveTo** gives you the same convenience but performs a **Cut & Paste** operation, helping you organize files instantly without leaving duplicates behind.
+`MoveTo` is a context-menu "Send To" style tool that moves files/folders using a hardened Robocopy pipeline.
 
-It integrates with Windows Explorer context menus and uses a hardened `robocopy` backend for the actual transfer.
+## Features
 
----
+- Move items directly from Explorer submenu `Move To`.
+- Add/remove destinations from the same submenu.
+- Staged multi-select pipeline (files + folders).
+- Select-all fast path for very large selections.
+- Robust `cut -> paste` behavior on duplicate targets (`/IS`) without deleting the source root folder.
 
-## ✨ Features
+## Installation
 
-*   **✂️ Move, Don't Copy:** Acts exactly like "Send To", but moves the files.
-*   **➕ Add Destinations Easily:** Right-click ANY folder -> **[Add as destination]** to instantly add it to your menu.
-*   **✏️ Edit/Remove:** Built-in interactive menu to remove old destinations quickly.
-*   **⚡ RoboCopy Backend:** Uses staged `robocopy` move flow optimized for mixed multi-select (files + folders).
-*   **🛡️ Reliability First:** Reuses the same staging/paste hardening from the standalone RoboCopy pipeline.
+1. Import `MoveTo.reg`.
+2. Run:
 
----
+```powershell
+.\SyncMoveToMenu.ps1
+```
 
-## 🛠️ Installation
+## Usage
 
-1.  Open PowerShell in this folder.
-2.  **Register the Base Menu:**
-    *   Double-click `MoveTo.reg` and confirm "Yes".
-3.  **Initialize Destinations:**
-    *   Run the sync script in PowerShell:
-    ```powershell
-    .\SyncMoveToMenu.ps1
-    ```
-4.  **Done!** Right-click any file/folder to see the new **"Move To"** menu.
+- Move:
+  - Select items in Explorer.
+  - Right click -> `Move To` -> destination.
+- Add destination:
+  - Right click a folder -> `Move To` -> `[Add as destination]`.
+- Edit destinations:
+  - Right click any item -> `Move To` -> `[Edit destinations]`.
 
----
+## Runtime Architecture
 
-## 🎮 Usage
+1. `MoveTo.vbs`:
+   - Resolves destination shortcut.
+   - Deduplicates burst invokes.
+   - Starts stage + paste wrappers.
+2. `RoboCopy_Silent.vbs` + `rcopySingle.ps1`:
+   - Captures actual Explorer selection.
+   - Writes staged snapshot (`state\staging\*.stage.json`).
+3. `RoboPaste_Admin.vbs` + `rcp.ps1`:
+   - Runs elevated paste in Windows Terminal.
+   - Applies adaptive `/MT`.
+   - Handles tokenized select-all move path while preserving source root folder identity.
 
-### 1. Moving Files
-*   Select one or more files/folders.
-*   Right-click -> **Move To** -> Select your destination.
-*   *Note:* The utility connects to your active Explorer window to grab the selection, ensuring all highlighted items are moved.
+## Repository Layout
 
-### 2. Adding a New Destination
-*   Navigate to the folder you want to add as a destination.
-*   Right-click the folder -> **Move To** -> **[Add as destination]**.
-*   It will instantly appear in your "Move To" menu!
+- Root: active runtime scripts/wrappers (`MoveTo.vbs`, `rcopySingle.ps1`, `rcp.ps1`, `RoboTune.*`, destination scripts, sync script).
+- `docs\`: project notes/rules and Gemini working files.
+- `logs\`: runtime logs.
+- `source\`: legacy/reference artifacts (`MoveTo.cs`, `MoveTo.ps1`, `MoveTo.exe`), not used by current runtime pipeline.
 
-### 3. removing Destinations
-*   Right-click any file -> **Move To** -> **[Edit destinations]**.
-*   An interactive menu will open:
-    *   Press the **number** of the destination to remove it.
-    *   Type multiple numbers (e.g., `1,3`) to remove items in bulk.
-    *   Press **[O]** to open the `destinations` folder manually.
-    *   Press **[R]** to refresh the list.
+## Logs
 
----
+- `logs\MoveTo_debug.log`
+- `logs\run_log.txt`
+- `logs\stage_log.txt`
+- `logs\error_log.txt`
+- `logs\robocopy_debug.log` (when debug mode is enabled in `RoboTune.json`)
 
-## ⚙️ How it Works (Architecture)
+## Troubleshooting
 
-The system is built on a robust 3-stage pipeline designed for stability:
-
-### Stage 1: The Gatekeeper (`MoveTo.vbs`)
-*   **Prevents Double-Launches:** Checks a `marker file` so only one move operation per destination runs.
-*   **Crash Recovery:** Auto-cleans stale markers (>5 min).
-*   **Destination Resolve:** Reads the destination `.lnk` and validates target path.
-
-### Stage 2: Selection Staging (`rcopySingle.ps1`)
-*   **Explorer Selection Capture:** Grabs the full active selection from Explorer (not only `%1`).
-*   **Race Hardening:** Uses named mutex + retries + ready metadata.
-*   **Atomic Snapshot:** Writes the staged payload (`mv.stage.json`) before transfer.
-
-### Stage 3: Transfer Execution (`rcp.ps1`)
-*   **Move Mode:** Runs in `mv` mode and transfers into the chosen destination.
-*   **Adaptive `/MT`:** Thread count is selected by media/path topology.
-*   **Fail-Closed Contract:** If staged payload is missing/invalid, operation exits cleanly.
-*   **Cleanup:** Clears staged payload and burst markers after completion.
-
----
-
-## 🐛 Troubleshooting
-
-*   **MoveTo launcher log:** `%TEMP%\MoveTo_debug.log`
-*   **RoboCopy run log:** `run_log.txt`
-*   **Staging log:** `stage_log.txt`
-*   **Missing Icons?** Run `SyncMoveToMenu.ps1` to refresh menu entries/icons.
-
----
-
-*Verified with 86,000 files in a single batch.* 💪
+- If menu icons/entries drift, run `.\SyncMoveToMenu.ps1`.
+- If paste fails, inspect `logs\error_log.txt` and `logs\run_log.txt`.

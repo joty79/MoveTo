@@ -2,10 +2,21 @@ Powershell/
 .gemini/
 .antigravity/
 *.log
+run_log.txt
+stage_log.txt
+error_log.txt
+robocopy_debug.log
+logs/*.txt
+logs/*.log
+!logs/.gitkeep
 
 archive/
 update/
 .vscode/
+Robocopy/
+AGENTS.md
+Microsoft.PowerShell_profile.ps1
+docs/Microsoft.PowerShell_profile.ps1
 
 destinations/*
 !destinations/.gitkeep

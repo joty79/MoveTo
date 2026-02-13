@@ -569,6 +569,18 @@
 - Files affected: `rcp.ps1`, `PROJECT_RULES.md`.
 - Validation/tests: PowerShell parser validation (`rcp.ps1`) + runtime retest pending (select-all cut, verify source folder remains same object/position).
 
+### 2026-02-13 - Centralize MoveTo runtime logs under `logs\`
+- Problem: Runtime logs ήταν διασκορπισμένα (root `.txt` και `%TEMP%`), κάνοντας το housekeeping δύσκολο.
+- Root cause: `rcp.ps1`, `rcopySingle.ps1` και `MoveTo.vbs` είχαν hardcoded log paths εκτός `logs\`.
+- Guardrail: Όλα τα runtime logs γράφουν πλέον σε `logs\`:
+  - `logs\run_log.txt`
+  - `logs\stage_log.txt`
+  - `logs\error_log.txt`
+  - `logs\robocopy_debug.log`
+  - `logs\MoveTo_debug.log`
+- Files affected: `rcp.ps1`, `rcopySingle.ps1`, `MoveTo.vbs`, `README.md`, `.gitignore`, `docs/PROJECT_RULES.md`.
+- Validation/tests: PowerShell parser validation (`rcp.ps1`, `rcopySingle.ps1`) + static path review στα log echoes/writes.
+
 ## Entry Template
 ### YYYY-MM-DD - Short decision title
 - Problem:

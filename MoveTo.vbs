@@ -7,7 +7,7 @@ Option Explicit
 Dim sourcePath, destName
 Dim wsh, fso
 Dim markerFile, f
-Dim scriptRoot, destinationsFolder
+Dim scriptRoot, destinationsFolder, logsFolder
 Dim stageScriptPath, pasteScriptPath, stageWrapperPath, pasteWrapperPath
 Dim moveToLogPath
 
@@ -19,11 +19,17 @@ Set wsh = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 scriptRoot = fso.GetParentFolderName(WScript.ScriptFullName)
 destinationsFolder = scriptRoot & "\destinations"
+logsFolder = scriptRoot & "\logs"
 stageScriptPath = scriptRoot & "\rcopySingle.ps1"
 pasteScriptPath = scriptRoot & "\rcp.ps1"
 stageWrapperPath = scriptRoot & "\RoboCopy_Silent.vbs"
 pasteWrapperPath = scriptRoot & "\RoboPaste_Admin.vbs"
-moveToLogPath = wsh.ExpandEnvironmentStrings("%TEMP%") & "\MoveTo_debug.log"
+If Not fso.FolderExists(logsFolder) Then
+    On Error Resume Next
+    fso.CreateFolder logsFolder
+    On Error GoTo 0
+End If
+moveToLogPath = logsFolder & "\MoveTo_debug.log"
 
 Sub WriteLog(ByVal msg)
     On Error Resume Next
