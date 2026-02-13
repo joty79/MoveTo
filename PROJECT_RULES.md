@@ -534,6 +534,20 @@
 - Files affected: `MoveTo.vbs`, `RoboCopy_Silent.vbs` (new), `RoboPaste_Admin.vbs` (new).
 - Validation/tests: `cscript //nologo` smoke checks on all wrappers + static command-path review.
 
+### 2026-02-13 - MoveTo paste confirmation disabled for standalone parity
+- Problem: Manual confirmation UI (`mv m`) made MoveTo paste window look/behave differently from standalone RoboPaste and added heavy filename preview noise.
+- Root cause: `MoveTo\RoboPaste_Admin.vbs` had been switched to explicit manual mode.
+- Guardrail: `MoveTo\RoboPaste_Admin.vbs` uses `rcp.ps1 auto auto "<dest>"` (same launcher semantics as standalone RoboPaste).
+- Files affected: `RoboPaste_Admin.vbs`.
+- Validation/tests: Static wrapper arg review (`auto auto`) + user retest requested.
+
+### 2026-02-13 - MoveTo popup latency reduction (async stage launch)
+- Problem: Στο MoveTo one-click flow το WT paste window εμφανιζόταν πολύ αργά σε μεγάλα selections, γιατί περίμενε πρώτα να ολοκληρωθεί όλο το stage.
+- Root cause: `MoveTo.vbs` εκτελούσε stage wrapper με blocking wait (`wsh.Run(..., True)`).
+- Guardrail: Launch stage wrapper asynchronously (`wsh.Run(..., False)`) και ξεκίνα paste wrapper μετά από μικρό settle delay (`250ms`) ώστε το window να ανοίγει άμεσα ενώ το stage συνεχίζει in-flight.
+- Files affected: `MoveTo.vbs`.
+- Validation/tests: Static flow review (async stage + delayed paste launch), user runtime retest pending.
+
 ## Entry Template
 ### YYYY-MM-DD - Short decision title
 - Problem:

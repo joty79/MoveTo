@@ -57,7 +57,7 @@ f.Close
 ' Resolve destination from shortcut
 Dim shortcutPath, lnk, destPath, stageCmd, pasteCmd
 Dim safeSourcePath, safeDestPath
-Dim stageExitCode, pasteExitCode
+Dim pasteExitCode
 
 shortcutPath = destinationsFolder & "\" & destName & ".lnk"
 If Not fso.FileExists(shortcutPath) Then
@@ -88,16 +88,21 @@ WScript.Sleep 500
 ' Stage selected items via the same silent Robo-Cut wrapper flow as standalone Robocopy
 safeSourcePath = Replace(sourcePath, """", """""")
 stageCmd = "wscript.exe """ & stageWrapperPath & """ mv """ & safeSourcePath & """"
-stageExitCode = wsh.Run(stageCmd, 0, True)
-
-' Wrapper should normally return 0. Keep fail-fast if shell returns failure.
-If stageExitCode <> 0 Then
-    WriteLog "ERROR: staging failed | ExitCode=" & CStr(stageExitCode) & " | Source='" & sourcePath & "'"
+On Error Resume Next
+wsh.Run stageCmd, 0, False
+If Err.Number <> 0 Then
+    WriteLog "ERROR: staging launch failed | Err=" & CStr(Err.Number) & " | Source='" & sourcePath & "'"
+    Err.Clear
+    On Error GoTo 0
     On Error Resume Next
     fso.DeleteFile markerFile, True
     On Error GoTo 0
     WScript.Quit 1
 End If
+On Error GoTo 0
+
+' Small settle window so stage lock/burst markers are visible before paste starts.
+WScript.Sleep 250
 
 ' Launch the same elevated Robo-Paste wrapper flow as standalone Robocopy.
 safeDestPath = Replace(destPath, """", """""")
