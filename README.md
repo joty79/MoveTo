@@ -3,7 +3,7 @@
 
 Windows has a built-in "Send To" menu, but it creates copies. **MoveTo** gives you the same convenience but performs a **Cut & Paste** operation, helping you organize files instantly without leaving duplicates behind.
 
-It integrates seamlessly with Windows Explorer, using the native progress dialogs you already know.
+It integrates with Windows Explorer context menus and uses a hardened `robocopy` backend for the actual transfer.
 
 ---
 
@@ -12,8 +12,8 @@ It integrates seamlessly with Windows Explorer, using the native progress dialog
 *   **✂️ Move, Don't Copy:** Acts exactly like "Send To", but moves the files.
 *   **➕ Add Destinations Easily:** Right-click ANY folder -> **[Add as destination]** to instantly add it to your menu.
 *   **✏️ Edit/Remove:** Built-in interactive menu to remove old destinations quickly.
-*   **🎨 Native Experience:** Uses the standard Windows copy/move engine with support for Undo, Pause, Cancel, and Conflict Resolution (Skip/Replace).
-*   **🛡️ Reliable:** Handles large transfers and process cleanup automatically.
+*   **⚡ RoboCopy Backend:** Uses staged `robocopy` move flow optimized for mixed multi-select (files + folders).
+*   **🛡️ Reliability First:** Reuses the same staging/paste hardening from the standalone RoboCopy pipeline.
 
 ---
 
@@ -58,31 +58,29 @@ It integrates seamlessly with Windows Explorer, using the native progress dialog
 The system is built on a robust 3-stage pipeline designed for stability:
 
 ### Stage 1: The Gatekeeper (`MoveTo.vbs`)
-*   **Prevents Double-Launches:** Checks for a `marker file` to ensure only one move operation starts at a time.
-*   **Crash Recovery:** Automatically cleans up "stale" markers if a previous run crashed (>5 mins old).
-*   **Waits for Engine:** Launches the main executable and waits for it to finish before releasing the lock.
+*   **Prevents Double-Launches:** Checks a `marker file` so only one move operation per destination runs.
+*   **Crash Recovery:** Auto-cleans stale markers (>5 min).
+*   **Destination Resolve:** Reads the destination `.lnk` and validates target path.
 
-### Stage 2: The Engine (`MoveTo.exe` - C#)
-*   **High Performance:** Compiled on-the-fly to native code for maximum speed.
-*   **Global Layout:** Uses `Global\MoveTo_Operation` Mutex as a second layer of defense.
-*   **Explorer Hook:** Connects to the active Explorer window via COM to retrieve the *exact* list of selected items (verified with 86,000 files).
-*   **Retry Logic:** If Explorer returns 0 items (a common post-cancel bug), it intelligently retries until the selection is stable.
+### Stage 2: Selection Staging (`Robocopy\rcopySingle.ps1`)
+*   **Explorer Selection Capture:** Grabs the full active selection from Explorer (not only `%1`).
+*   **Race Hardening:** Uses named mutex + retries + ready metadata.
+*   **Atomic Snapshot:** Writes the staged payload (`mv.stage.json`) before transfer.
 
-### Stage 3: The Watchdog (Background Thread)
-*   **Monitors Progress:** Watches the progress dialog window handle.
-*   **Auto-Exit Conditions:**
-    *   Dialog closes (User Finished/Cancelled/Closed).
-    *   Source files are gone (Move Complete).
-    *   Timeout (60s no start / 30m hard limit).
-*   **Clean Exit:** Forces a clean process termination when done, preventing the infamous "100% CPU" hang often seen with large file moves.
+### Stage 3: Transfer Execution (`Robocopy\rcp.ps1`)
+*   **Move Mode:** Runs in `mv` mode and transfers into the chosen destination.
+*   **Adaptive `/MT`:** Thread count is selected by media/path topology.
+*   **Fail-Closed Contract:** If staged payload is missing/invalid, operation exits cleanly.
+*   **Cleanup:** Clears staged payload and burst markers after completion.
 
 ---
 
 ## 🐛 Troubleshooting
 
-*   **Logs:** Detailed debug logs are written to `%TEMP%\MoveTo_debug.log`.
-*   **Stuck Process?** The watchdog should kill it automatically. If not, run `Stop-Process -Name MoveTo`.
-*   **Missing Icons?** The script tries to pull icons from the target folder's `desktop.ini` or the shortcut itself. Run `SyncMoveToMenu.ps1` to refresh them.
+*   **MoveTo launcher log:** `%TEMP%\MoveTo_debug.log`
+*   **RoboCopy run log:** `Robocopy\run_log.txt`
+*   **Staging log:** `Robocopy\stage_log.txt`
+*   **Missing Icons?** Run `SyncMoveToMenu.ps1` to refresh menu entries/icons.
 
 ---
 

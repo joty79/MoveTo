@@ -457,6 +457,20 @@
 - Files affected: Moved out of workspace root: `roboshift-main`, `Robocopy`, `EditSendToDestinations.ps1`, `EditSendToDestinations.vbs`.
 - Validation/tests: Post-move root listing verified + archive path verified (`D:\Users\joty79\scripts\_archive\MoveTo_cleanup_2026-02-13_044832`).
 
+### 2026-02-13 - MoveTo engine switched to Robocopy pipeline
+- Problem: Το stable context-menu UX του `Move To` έπρεπε να κρατηθεί, αλλά το transfer engine να περάσει σε robocopy για reliability hardening.
+- Root cause: Το legacy path (`MoveTo.exe`) ήταν ξεχωριστό από τις πρόσφατες βελτιώσεις staging/transfer που έγιναν στο `Robocopy`.
+- Guardrail: Κρατάμε το ίδιο menu/destination contract (`MoveTo.vbs "%1" "<destName>"`) και αλλάζουμε μόνο backend: `MoveTo.vbs` κάνει stage με `Robocopy\rcopySingle.ps1` (mode `mv`) και execute με `Robocopy\rcp.ps1` (`mv s <dest> __moveto`). Στο `__moveto` mode το `rcp.ps1` τρέχει forced non-interactive (no benchmark hold/prompts).
+- Files affected: `MoveTo.vbs`, `Robocopy/rcp.ps1`, `README.md`.
+- Validation/tests: PowerShell parser check (`Robocopy/rcp.ps1`, `Robocopy/rcopySingle.ps1`) + `cscript //nologo MoveTo.vbs "C:\does_not_exist.txt" "__missing_dest__"` (expected graceful exit code 1).
+
+### 2026-02-13 - Remove NuclearDelete track from MoveTo repo
+- Problem: Το repo έπρεπε να μείνει focused στο MoveTo/Robocopy χωρίς παράλληλο delete tool track.
+- Root cause: Το `NuclearDelete` ήταν πλέον out-of-scope για το τρέχον implementation phase.
+- Guardrail: Remove `NuclearDelete` folder from git history going forward in this branch; keep decision log in `PROJECT_RULES.md` για traceability.
+- Files affected: `NuclearDelete/*` (all tracked files removed).
+- Validation/tests: `git rm -r NuclearDelete` completed successfully; pending final commit/push.
+
 ## Entry Template
 ### YYYY-MM-DD - Short decision title
 - Problem:
