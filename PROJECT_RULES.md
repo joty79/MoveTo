@@ -471,6 +471,13 @@
 - Files affected: `NuclearDelete/*` (all tracked files removed).
 - Validation/tests: `git rm -r NuclearDelete` completed successfully; pending final commit/push.
 
+### 2026-02-13 - MoveTo robocopy engine relocated to repo root
+- Problem: Ζητήθηκε το MoveTo να μην εξαρτάται από ξεχωριστό `Robocopy\...` subtree path για τα core engine scripts.
+- Root cause: Το αρχικό integration έδειχνε σε `Robocopy\rcopySingle.ps1` και `Robocopy\rcp.ps1`.
+- Guardrail: Τα core robocopy engine scripts μεταφέρονται στο root του MoveTo (`rcopySingle.ps1`, `rcp.ps1`) και το `MoveTo.vbs` καλεί μόνο root-local paths.
+- Files affected: `MoveTo.vbs`, `rcopySingle.ps1` (moved), `rcp.ps1` (moved), `README.md`.
+- Validation/tests: PowerShell parser checks + smoke move test after relocation.
+
 ## Entry Template
 ### YYYY-MM-DD - Short decision title
 - Problem:

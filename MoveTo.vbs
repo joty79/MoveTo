@@ -19,8 +19,8 @@ Set wsh = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 scriptRoot = fso.GetParentFolderName(WScript.ScriptFullName)
 destinationsFolder = scriptRoot & "\destinations"
-stageScriptPath = scriptRoot & "\Robocopy\rcopySingle.ps1"
-pasteScriptPath = scriptRoot & "\Robocopy\rcp.ps1"
+stageScriptPath = scriptRoot & "\rcopySingle.ps1"
+pasteScriptPath = scriptRoot & "\rcp.ps1"
 moveToLogPath = wsh.ExpandEnvironmentStrings("%TEMP%") & "\MoveTo_debug.log"
 
 Sub WriteLog(ByVal msg)

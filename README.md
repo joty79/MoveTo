@@ -62,12 +62,12 @@ The system is built on a robust 3-stage pipeline designed for stability:
 *   **Crash Recovery:** Auto-cleans stale markers (>5 min).
 *   **Destination Resolve:** Reads the destination `.lnk` and validates target path.
 
-### Stage 2: Selection Staging (`Robocopy\rcopySingle.ps1`)
+### Stage 2: Selection Staging (`rcopySingle.ps1`)
 *   **Explorer Selection Capture:** Grabs the full active selection from Explorer (not only `%1`).
 *   **Race Hardening:** Uses named mutex + retries + ready metadata.
 *   **Atomic Snapshot:** Writes the staged payload (`mv.stage.json`) before transfer.
 
-### Stage 3: Transfer Execution (`Robocopy\rcp.ps1`)
+### Stage 3: Transfer Execution (`rcp.ps1`)
 *   **Move Mode:** Runs in `mv` mode and transfers into the chosen destination.
 *   **Adaptive `/MT`:** Thread count is selected by media/path topology.
 *   **Fail-Closed Contract:** If staged payload is missing/invalid, operation exits cleanly.
@@ -78,8 +78,8 @@ The system is built on a robust 3-stage pipeline designed for stability:
 ## 🐛 Troubleshooting
 
 *   **MoveTo launcher log:** `%TEMP%\MoveTo_debug.log`
-*   **RoboCopy run log:** `Robocopy\run_log.txt`
-*   **Staging log:** `Robocopy\stage_log.txt`
+*   **RoboCopy run log:** `run_log.txt`
+*   **Staging log:** `stage_log.txt`
 *   **Missing Icons?** Run `SyncMoveToMenu.ps1` to refresh menu entries/icons.
 
 ---
