@@ -548,6 +548,13 @@
 - Files affected: `MoveTo.vbs`.
 - Validation/tests: Static flow review (async stage + delayed paste launch), user runtime retest pending.
 
+### 2026-02-13 - MoveTo synced to Robocopy v3 engine baseline
+- Problem: Το MoveTo branch έμενε σε pre-optimization robocopy engine ενώ το standalone Robocopy είχε ήδη v3 staging/performance/reliability fixes.
+- Root cause: Drift μεταξύ `D:\Users\joty79\scripts\MoveTo` και `D:\Users\joty79\scripts\Robocopy` στα core engine scripts.
+- Guardrail: Keep `MoveTo\rcopySingle.ps1` και `MoveTo\rcp.ps1` byte-identical με το Robocopy v3 baseline, εκτός αν υπάρχει explicit MoveTo-specific requirement.
+- Files affected: `rcopySingle.ps1`, `rcp.ps1`, `PROJECT_RULES.md`.
+- Validation/tests: SHA256 equality checks (`True` και στα δύο αρχεία) + PowerShell parser validation (`OK` και στα δύο scripts).
+
 ## Entry Template
 ### YYYY-MM-DD - Short decision title
 - Problem:
