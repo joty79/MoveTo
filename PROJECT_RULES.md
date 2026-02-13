@@ -478,6 +478,62 @@
 - Files affected: `MoveTo.vbs`, `rcopySingle.ps1` (moved), `rcp.ps1` (moved), `README.md`.
 - Validation/tests: PowerShell parser checks + smoke move test after relocation.
 
+### 2026-02-13 - MoveTo paste switched to visible interactive conflict flow
+- Problem: Στο MoveTo robocopy mode το paste έτρεχε hidden + single mode, οπότε ο χρήστης δεν έβλεπε conflict prompts (`Overwrite/Merge`).
+- Root cause: `MoveTo.vbs` καλούσε `rcp.ps1` ως `mv s` με `WindowStyle Hidden` και `wsh.Run(..., 0, True)`.
+- Guardrail: Για MoveTo invoke, το paste τρέχει visible και interactive (`mv m` + `wsh.Run(..., 1, True)`) ώστε να εμφανίζονται τα merge/overwrite prompts.
+- Files affected: `MoveTo.vbs`.
+- Validation/tests: Static command-path review στο `MoveTo.vbs` (`mv m`, visible run mode) + dry-run wrapper exit check.
+
+### 2026-02-13 - MoveTo paste elevation aligned with standalone Robocopy
+- Problem: Το MoveTo robocopy flow χρειαζόταν admin rights στο paste path (όπως το standalone `RoboPaste_Admin`) για restricted destinations και consistent behavior.
+- Root cause: Το MoveTo invoke έτρεχε non-elevated `pwsh -File rcp.ps1 ...`.
+- Guardrail: Κρατάμε stage non-elevated, αλλά το paste εκτελεί `rcp.ps1` μέσω `Start-Process -Verb RunAs -Wait -PassThru` ώστε να υπάρχει UAC elevation και να επιστρέφεται exit code στο `MoveTo.vbs`.
+- Files affected: `MoveTo.vbs`.
+- Validation/tests: Static review command chain (`Verb RunAs` + `-Wait -PassThru`) και wrapper smoke check.
+
+### 2026-02-13 - Elevated paste supports mapped network drive destinations
+- Problem: Με UAC elevation, destination shortcuts που δείχνουν σε mapped drives (π.χ. `L:\...`) αποτύγχαναν με `Paste target path does not exist`.
+- Root cause: Elevated process συχνά δεν βλέπει user mapped drive letters (split-token/session mapping behavior).
+- Guardrail: Στο `MoveTo.vbs` γίνεται resolve drive-letter destination σε UNC path (μέσω `WScript.Network.EnumNetworkDrives`) πριν το elevated paste. Αν το UNC path δεν είναι reachable, γίνεται fallback στο original path με log warning.
+- Files affected: `MoveTo.vbs`.
+- Validation/tests: Log-correlated fix targeting (`L:\...` failures in `run_log.txt`) + static function path review (`ResolveDestinationForElevation`).
+
+### 2026-02-13 - MoveTo paste launcher aligned to standalone WT experience
+- Problem: Ζητήθηκε το MoveTo robocopy paste να ανοίγει το ίδιο visible WT admin flow με το standalone Robocopy.
+- Root cause: Το MoveTo launcher χρησιμοποιούσε direct elevated `pwsh` path χωρίς `wt.exe`.
+- Guardrail: `MoveTo.vbs` πλέον δοκιμάζει πρώτα `ShellExecute("wt.exe", "new-tab pwsh ...", "runas")` (visible admin WT tab) και κρατά fallback σε direct elevated `pwsh` μόνο αν αποτύχει το WT launch.
+- Files affected: `MoveTo.vbs`.
+- Validation/tests: Static command chain review + wrapper smoke check.
+
+### 2026-02-13 - MoveTo paste command parity with standalone RoboPaste
+- Problem: Το MoveTo flow έδειχνε διαφορετικό/βαρύ pre-confirm UI (`mv m`) με μεγάλο delay σε huge selections (π.χ. 4944 items), σε αντίθεση με το standalone RoboPaste.
+- Root cause: Το MoveTo launcher καλούσε `rcp.ps1` με explicit `mv m` (interactive preview list) αντί για το standalone invocation style.
+- Guardrail: Για parity/performance, MoveTo paste invoke πλέον χρησιμοποιεί ακριβώς `rcp.ps1 auto auto "<destination>"` (same as standalone), μέσω elevated WT launcher path με fallback.
+- Files affected: `MoveTo.vbs`.
+- Validation/tests: Static command review (`auto auto`) + runtime retest requested with large selection scenario.
+
+### 2026-02-13 - Sync MoveTo stage-capture script with standalone Robocopy
+- Problem: Το `MoveTo\rcopySingle.ps1` είχε drift από το standalone `Robocopy\rcopySingle.ps1` σε selection-capture logic.
+- Root cause: Μεταφέρθηκε παλαιότερο variant κατά το initial migration στο MoveTo repo.
+- Guardrail: Keep `MoveTo\rcopySingle.ps1` in sync με το standalone baseline για stage reliability (anchor-aware Explorer selection fallback behavior).
+- Files affected: `rcopySingle.ps1`.
+- Validation/tests: SHA256 equality check between `MoveTo\rcopySingle.ps1` and `D:\Users\joty79\scripts\Robocopy\rcopySingle.ps1`.
+
+### 2026-02-13 - Sync MoveTo paste engine script with standalone Robocopy
+- Problem: Το `MoveTo\rcp.ps1` είχε MoveTo-specific διαφοροποιήσεις που δημιουργούσαν mismatch συμπεριφοράς σε σχέση με standalone RoboPaste.
+- Root cause: Προσωρινές custom αλλαγές για MoveTo invoke (`__moveto` path).
+- Guardrail: Keep `MoveTo\rcp.ps1` byte-identical με `D:\Users\joty79\scripts\Robocopy\rcp.ps1` για behavior parity και χαμηλότερο maintenance risk.
+- Files affected: `rcp.ps1`.
+- Validation/tests: SHA256 equality check between `MoveTo\rcp.ps1` and standalone `Robocopy\rcp.ps1` + parser validation.
+
+### 2026-02-13 - MoveTo launcher now delegates to same Robocopy wrappers
+- Problem: MoveTo runtime behavior/UI timing still differed from standalone Robocopy flow during large selection moves.
+- Root cause: `MoveTo.vbs` directly launched `rcopySingle.ps1`/`rcp.ps1` with custom elevation/invoke logic instead of wrapper parity.
+- Guardrail: `MoveTo.vbs` now delegates to local wrapper equivalents (`RoboCopy_Silent.vbs` for hidden `mv` staging, `RoboPaste_Admin.vbs` for elevated `wt.exe` paste), while keeping destination/menu contract unchanged.
+- Files affected: `MoveTo.vbs`, `RoboCopy_Silent.vbs` (new), `RoboPaste_Admin.vbs` (new).
+- Validation/tests: `cscript //nologo` smoke checks on all wrappers + static command-path review.
+
 ## Entry Template
 ### YYYY-MM-DD - Short decision title
 - Problem:

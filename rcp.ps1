@@ -35,21 +35,10 @@ $script:StageResolveTimeoutMs = 4000
 $script:StageResolveMaxTimeoutMs = 12000
 $script:StageBurstStaleSeconds = 6
 $script:StageResolvePollMs = 80
-$script:IsMoveToInvoke = $false
-foreach ($rawArg in @($args)) {
-	if ([string]::IsNullOrWhiteSpace([string]$rawArg)) { continue }
-	if (([string]$rawArg).Trim().ToLowerInvariant() -eq "__moveto") {
-		$script:IsMoveToInvoke = $true
-		break
-	}
-}
 
 
 function NoListAvailable {
 	Remove-StageBurstMarker
-	if ($script:IsMoveToInvoke) {
-		Exit-Script -Code 1 -Reason "NoListAvailable (MoveTo invoke): staged list missing."
-	}
 	if ($mode -eq "m") {
 		echo "List of items to be $string1 does not exist!"
 		Start-Sleep 1
@@ -620,19 +609,7 @@ function Get-TuneConfig {
 }
 
 function Get-RunSettings {
-	param(
-		[object]$Config,
-		[bool]$ForceNonInteractive = $false
-	)
-
-	if ($ForceNonInteractive) {
-		return [pscustomobject]@{
-			BenchmarkMode   = $false
-			BenchmarkOutput = $false
-			HoldWindow      = $false
-			DebugMode       = $false
-		}
-	}
+	param([object]$Config)
 
 	$benchmarkMode = $false
 	$debugMode = $false
@@ -1342,10 +1319,10 @@ $script:RobocopyDebugLogPath = "$PSScriptRoot\robocopy_debug.log"
 $tuneConfigPath = Join-Path $PSScriptRoot "RoboTune.json"
 $script:RoboTuneConfig = Get-TuneConfig -ConfigPath $tuneConfigPath
 $script:StageBackend = Get-StageBackend -Config $script:RoboTuneConfig
-$script:RunSettings = Get-RunSettings -Config $script:RoboTuneConfig -ForceNonInteractive:$script:IsMoveToInvoke
+$script:RunSettings = Get-RunSettings -Config $script:RoboTuneConfig
 Write-RunLog "===== START ====="
 Write-RunLog ("Config path: {0}" -f $tuneConfigPath)
-Write-RunLog ("BenchmarkMode={0} | BenchmarkOutput={1} | HoldWindow={2} | DebugMode={3} | StageBackend={4} | MoveToInvoke={5}" -f $script:RunSettings.BenchmarkMode, $script:RunSettings.BenchmarkOutput, $script:RunSettings.HoldWindow, $script:RunSettings.DebugMode, $script:StageBackend, $script:IsMoveToInvoke)
+Write-RunLog ("BenchmarkMode={0} | BenchmarkOutput={1} | HoldWindow={2} | DebugMode={3} | StageBackend={4}" -f $script:RunSettings.BenchmarkMode, $script:RunSettings.BenchmarkOutput, $script:RunSettings.HoldWindow, $script:RunSettings.DebugMode, $script:StageBackend)
 if ($script:RunSettings.BenchmarkMode) {
 	Write-Host "Benchmark mode is ON (window will stay open at end)." -ForegroundColor Cyan
 	Write-Host ("Run log: {0}" -f $script:RunLogPath) -ForegroundColor DarkCyan

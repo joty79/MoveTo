@@ -8,7 +8,7 @@ Dim sourcePath, destName
 Dim wsh, fso
 Dim markerFile, f
 Dim scriptRoot, destinationsFolder
-Dim stageScriptPath, pasteScriptPath
+Dim stageScriptPath, pasteScriptPath, stageWrapperPath, pasteWrapperPath
 Dim moveToLogPath
 
 If WScript.Arguments.Count < 2 Then WScript.Quit 1
@@ -21,6 +21,8 @@ scriptRoot = fso.GetParentFolderName(WScript.ScriptFullName)
 destinationsFolder = scriptRoot & "\destinations"
 stageScriptPath = scriptRoot & "\rcopySingle.ps1"
 pasteScriptPath = scriptRoot & "\rcp.ps1"
+stageWrapperPath = scriptRoot & "\RoboCopy_Silent.vbs"
+pasteWrapperPath = scriptRoot & "\RoboPaste_Admin.vbs"
 moveToLogPath = wsh.ExpandEnvironmentStrings("%TEMP%") & "\MoveTo_debug.log"
 
 Sub WriteLog(ByVal msg)
@@ -73,9 +75,9 @@ If destPath = "" Or Not fso.FolderExists(destPath) Then
     WScript.Quit 1
 End If
 
-' Validate robocopy scripts
-If (Not fso.FileExists(stageScriptPath)) Or (Not fso.FileExists(pasteScriptPath)) Then
-    WriteLog "ERROR: robocopy scripts missing | stage='" & stageScriptPath & "' | paste='" & pasteScriptPath & "'"
+' Validate robocopy scripts + wrappers
+If (Not fso.FileExists(stageScriptPath)) Or (Not fso.FileExists(pasteScriptPath)) Or (Not fso.FileExists(stageWrapperPath)) Or (Not fso.FileExists(pasteWrapperPath)) Then
+    WriteLog "ERROR: robocopy runtime missing | stage='" & stageScriptPath & "' | paste='" & pasteScriptPath & "' | stageWrapper='" & stageWrapperPath & "' | pasteWrapper='" & pasteWrapperPath & "'"
     fso.DeleteFile markerFile, True
     WScript.Quit 1
 End If
@@ -83,13 +85,13 @@ End If
 ' Wait for other VBS instances to see marker and exit
 WScript.Sleep 500
 
-' Stage selected items in move mode (rcopySingle captures full Explorer selection)
+' Stage selected items via the same silent Robo-Cut wrapper flow as standalone Robocopy
 safeSourcePath = Replace(sourcePath, """", """""")
-stageCmd = "pwsh.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File """ & stageScriptPath & """ mv """ & safeSourcePath & """"
+stageCmd = "wscript.exe """ & stageWrapperPath & """ mv """ & safeSourcePath & """"
 stageExitCode = wsh.Run(stageCmd, 0, True)
 
-' rcopySingle exit codes: 0 (single), 10 (multi-selection staged), others = failure
-If stageExitCode <> 0 And stageExitCode <> 10 Then
+' Wrapper should normally return 0. Keep fail-fast if shell returns failure.
+If stageExitCode <> 0 Then
     WriteLog "ERROR: staging failed | ExitCode=" & CStr(stageExitCode) & " | Source='" & sourcePath & "'"
     On Error Resume Next
     fso.DeleteFile markerFile, True
@@ -97,17 +99,15 @@ If stageExitCode <> 0 And stageExitCode <> 10 Then
     WScript.Quit 1
 End If
 
-' Execute move directly to selected destination
+' Launch the same elevated Robo-Paste wrapper flow as standalone Robocopy.
 safeDestPath = Replace(destPath, """", """""")
-pasteCmd = "pwsh.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File """ & pasteScriptPath & """ mv s """ & safeDestPath & """ __moveto"
-pasteExitCode = wsh.Run(pasteCmd, 0, True)
-If pasteExitCode <> 0 Then
-    WriteLog "ERROR: paste failed | ExitCode=" & CStr(pasteExitCode) & " | Dest='" & destPath & "'"
-End If
+pasteCmd = "wscript.exe """ & pasteWrapperPath & """ """ & safeDestPath & """"
+pasteExitCode = wsh.Run(pasteCmd, 0, False)
+WriteLog "INFO: launched Robo-Paste wrapper | Dest='" & destPath & "'"
 
 ' Cleanup marker after move flow exits
 On Error Resume Next
 fso.DeleteFile markerFile, True
 On Error GoTo 0
 
-WScript.Quit pasteExitCode
+WScript.Quit 0
