@@ -581,6 +581,40 @@
 - Files affected: `rcp.ps1`, `rcopySingle.ps1`, `MoveTo.vbs`, `README.md`, `.gitignore`, `docs/PROJECT_RULES.md`.
 - Validation/tests: PowerShell parser validation (`rcp.ps1`, `rcopySingle.ps1`) + static path review στα log echoes/writes.
 
+### 2026-02-15 - Refresh self-heals static MoveTo actions (Add/Edit)
+- Problem: Μετά από `Refresh` στο `EditDestinations`, μπορούσαν να λείπουν τα static actions (`[Add as destination]`, `[Edit destinations]`) παρότι τα dynamic destinations (`dest_*`) εμφανίζονταν.
+- Root cause: Το `SyncMoveToMenu.ps1` συγχρόνιζε μόνο dynamic `dest_*` entries και δεν έκανε explicit ensure των static `yyy_Add`/`zzz_Edit` keys σε κάθε refresh.
+- Guardrail: Το `SyncMoveToMenu.ps1` κάνει πλέον self-heal των static action keys σε κάθε run:
+  - Files branch: `zzz_Edit` με `CommandFlags=0x20`.
+  - Directory branch: `yyy_Add` (with `%1`) + `zzz_Edit`.
+  - Επεκτάθηκε και το reserved shortcut filter για bracketed action names ώστε να μην ξαναμπαίνουν ως normal destinations.
+- Files affected: `SyncMoveToMenu.ps1`, `docs/PROJECT_RULES.md`.
+- Validation/tests: PowerShell parser validation (`SyncMoveToMenu.ps1`) + registry query verify (`*\shell\Z_MoveTo\shell\zzz_Edit`, `Directory\shell\Z_MoveTo\shell\yyy_Add`, `...\\zzz_Edit`).
+
+### 2026-02-15 - Static action writes hardened with `reg.exe` on wildcard shell keys
+- Problem: Τα static action keys εμφανίζονταν intermittently να "χάνονται" μετά από refresh/sync σε ορισμένα runs.
+- Root cause: Registry provider writes σε wildcard-heavy paths (`*\shell\...`) δεν ήταν αρκετά deterministic στο συγκεκριμένο flow.
+- Guardrail: Στο `SyncMoveToMenu.ps1`, τα static `yyy_Add`/`zzz_Edit` writes γίνονται πλέον με `reg.exe add` (MUIVerb/Icon/CommandFlags/(Default) command), με deterministic key/value creation.
+- Files affected: `SyncMoveToMenu.ps1`, `docs/PROJECT_RULES.md`.
+- Validation/tests: PowerShell parser validation (`SyncMoveToMenu.ps1`) + live registry readback (`reg query` στα 3 static keys).
+
+### 2026-02-15 - Actions submenu to avoid child-item render cap
+- Problem: Με πολλά destinations (π.χ. 16+), το static submenu renderer του Explorer έδειχνε μόνο τα πρώτα entries και τα `[Add as destination]` / `[Edit destinations]` έμεναν εκτός ορατού range.
+- Root cause: Τα action entries ήταν siblings στο ίδιο level με τα `dest_*` και sort-άρονταν στο τέλος (`yyy_Add`, `zzz_Edit`), άρα κόβονταν όταν ξεπερνιόταν το practical child cap.
+- Guardrail: Νέο σταθερό layout με `[Actions]` child submenu (`aaa_Actions`) που μένει ορατό:
+  - Files: `[Actions] -> [Edit destinations]`
+  - Directories: `[Actions] -> [Add as destination]`, `[Edit destinations]`
+  - Το sync κάνει migration cleanup από παλιό layout (`yyy_Add`, `zzz_Edit`) και self-heal τα νέα keys σε κάθε run.
+- Files affected: `SyncMoveToMenu.ps1`, `MoveTo.reg`, `docs/PROJECT_RULES.md`.
+- Validation/tests: PowerShell parser validation (`SyncMoveToMenu.ps1`) + static diff check (`aaa_Actions`, `yy_Add`, `zz_Edit` keys).
+
+### 2026-02-15 - Empty-string-safe registry helper params in sync script
+- Problem: Το `SyncMoveToMenu.ps1` έσκαγε με `Cannot bind argument to parameter 'Data' because it is an empty string` σε writes όπως `SubCommands=""`.
+- Root cause: Ο helper param `Data` ήταν mandatory string χωρίς `[AllowEmptyString()]`.
+- Guardrail: Το helper `Add-RegValue` δηλώνει πλέον `Data` ως `[AllowEmptyString()][string]` ώστε empty string registry values να γράφονται deterministic.
+- Files affected: `SyncMoveToMenu.ps1`, `docs/PROJECT_RULES.md`.
+- Validation/tests: PowerShell parser validation (`SyncMoveToMenu.ps1`) + runtime sync run χωρίς bind errors.
+
 ## Entry Template
 ### YYYY-MM-DD - Short decision title
 - Problem:

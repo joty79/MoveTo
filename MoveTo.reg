@@ -14,14 +14,19 @@ Windows Registry Editor Version 5.00
 
 [HKEY_CURRENT_USER\Software\Classes\*\shell\Z_MoveTo\shell]
 
-; Edit destinations (always last)
-[HKEY_CURRENT_USER\Software\Classes\*\shell\Z_MoveTo\shell\zzz_Edit]
+; Actions submenu (always visible even with many destinations)
+[HKEY_CURRENT_USER\Software\Classes\*\shell\Z_MoveTo\shell\aaa_Actions]
+"MUIVerb"="[Actions]"
+"Icon"="shell32.dll,-16710"
+"SubCommands"=""
+
+[HKEY_CURRENT_USER\Software\Classes\*\shell\Z_MoveTo\shell\aaa_Actions\shell]
+
+[HKEY_CURRENT_USER\Software\Classes\*\shell\Z_MoveTo\shell\aaa_Actions\shell\zz_Edit]
 "MUIVerb"="[Edit destinations]"
 "Icon"="shell32.dll,-16710"
-; Hex 20 = Separator Before
-"CommandFlags"=dword:00000020
 
-[HKEY_CURRENT_USER\Software\Classes\*\shell\Z_MoveTo\shell\zzz_Edit\command]
+[HKEY_CURRENT_USER\Software\Classes\*\shell\Z_MoveTo\shell\aaa_Actions\shell\zz_Edit\command]
 @="wscript.exe \"D:\\Users\\joty79\\scripts\\MoveTo\\EditDestinations.vbs\""
 
 ; ======== MOVE TO FOR FOLDERS ========
@@ -32,21 +37,24 @@ Windows Registry Editor Version 5.00
 
 [HKEY_CURRENT_USER\Software\Classes\Directory\shell\Z_MoveTo\shell]
 
-; Add as destination (only for folders)
-[HKEY_CURRENT_USER\Software\Classes\Directory\shell\Z_MoveTo\shell\yyy_Add]
+; Actions submenu (always visible even with many destinations)
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\Z_MoveTo\shell\aaa_Actions]
+"MUIVerb"="[Actions]"
+"Icon"="shell32.dll,-16710"
+"SubCommands"=""
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\Z_MoveTo\shell\aaa_Actions\shell]
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\Z_MoveTo\shell\aaa_Actions\shell\yy_Add]
 "MUIVerb"="[Add as destination]"
 "Icon"="shell32.dll,-16769"
-; Hex 20 = Separator Before (Separates this from the folders above it)
-"CommandFlags"=dword:00000020
 
-[HKEY_CURRENT_USER\Software\Classes\Directory\shell\Z_MoveTo\shell\yyy_Add\command]
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\Z_MoveTo\shell\aaa_Actions\shell\yy_Add\command]
 @="wscript.exe \"D:\\Users\\joty79\\scripts\\MoveTo\\AddMoveToDestination.vbs\" \"%1\""
 
-; Edit destinations
-[HKEY_CURRENT_USER\Software\Classes\Directory\shell\Z_MoveTo\shell\zzz_Edit]
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\Z_MoveTo\shell\aaa_Actions\shell\zz_Edit]
 "MUIVerb"="[Edit destinations]"
 "Icon"="shell32.dll,-16710"
-; No separator needed here (it will sit tightly under 'Add')
 
-[HKEY_CURRENT_USER\Software\Classes\Directory\shell\Z_MoveTo\shell\zzz_Edit\command]
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\Z_MoveTo\shell\aaa_Actions\shell\zz_Edit\command]
 @="wscript.exe \"D:\\Users\\joty79\\scripts\\MoveTo\\EditDestinations.vbs\""
