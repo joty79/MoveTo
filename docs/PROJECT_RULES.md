@@ -16,6 +16,15 @@
 - Prefer side-by-side experiments (for example, RoboCopy-based flow) instead of replacing the native path directly.
 
 ## Decision Log
+### 2026-02-15 - MoveTo parity sync: single-anchor stage guard + same-volume native move safety
+- Problem: (1) Σε single-item stage μπορούσε να αποθηκευτεί path διαφορετικό από το clicked anchor. (2) Cut στο ίδιο volume δεν είχε native fast path/safety guards.
+- Root cause: (1) COM selection fallback μπορούσε να επιστρέψει λάθος single path. (2) Η flow βασιζόταν πάντα σε robocopy+delete χωρίς explicit same-volume/native-move guardrails.
+- Guardrail/rule:
+  - `rcopySingle.ps1`: για single-item non-token selection, αν selected != anchor, γίνεται hard override στο anchor και γράφεται warning/debug marker.
+  - `rcp.ps1`: προστέθηκαν `Test-IsSameVolumePath` + `Test-IsPathInside`, native same-volume move fast paths (directory/file/file-batch), και hard block για destination-inside-source σε move.
+- Files affected: `rcopySingle.ps1`, `rcp.ps1`.
+- Validation/tests run: PowerShell parser validation (`Parser::ParseFile`) OK και για τα δύο αρχεία.
+
 ### 2026-02-11 - Adaptive RoboCopy thread rule
 - Problem: Fixed `/MT:32` is fast on NVMe but can underperform on HDD or same-drive copies.
 - Root cause: Storage bottlenecks vary by media type and path topology.

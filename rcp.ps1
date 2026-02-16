@@ -970,6 +970,55 @@ function Get-DirectoryStats {
 	return [pscustomobject]@{ Files = [int]$measure.Count; Bytes = $bytes }
 }
 
+function Test-IsSameVolumePath {
+	param(
+		[string]$SourcePath,
+		[string]$DestinationPath
+	)
+
+	$sourceNormalized = Normalize-ContextPathValue -PathValue $SourcePath
+	$destNormalized = Normalize-ContextPathValue -PathValue $DestinationPath
+	if ([string]::IsNullOrWhiteSpace($sourceNormalized) -or [string]::IsNullOrWhiteSpace($destNormalized)) {
+		return $false
+	}
+
+	try { $sourceNormalized = (Resolve-Path -LiteralPath $sourceNormalized -ErrorAction Stop).ProviderPath } catch { }
+	try { $destNormalized = (Resolve-Path -LiteralPath $destNormalized -ErrorAction Stop).ProviderPath } catch { }
+
+	$sourceRoot = [System.IO.Path]::GetPathRoot($sourceNormalized)
+	$destRoot = [System.IO.Path]::GetPathRoot($destNormalized)
+	if ([string]::IsNullOrWhiteSpace($sourceRoot) -or [string]::IsNullOrWhiteSpace($destRoot)) {
+		return $false
+	}
+
+	return [string]::Equals($sourceRoot.TrimEnd('\'), $destRoot.TrimEnd('\'), [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Test-IsPathInside {
+	param(
+		[string]$ParentPath,
+		[string]$CandidatePath
+	)
+
+	$parentNormalized = Normalize-ContextPathValue -PathValue $ParentPath
+	$candidateNormalized = Normalize-ContextPathValue -PathValue $CandidatePath
+	if ([string]::IsNullOrWhiteSpace($parentNormalized) -or [string]::IsNullOrWhiteSpace($candidateNormalized)) {
+		return $false
+	}
+
+	try { $parentNormalized = (Resolve-Path -LiteralPath $parentNormalized -ErrorAction Stop).ProviderPath } catch { }
+	try { $candidateNormalized = (Resolve-Path -LiteralPath $candidateNormalized -ErrorAction Stop).ProviderPath } catch { }
+
+	$parentTrimmed = $parentNormalized.TrimEnd('\')
+	$candidateTrimmed = $candidateNormalized.TrimEnd('\')
+	if ([string]::IsNullOrWhiteSpace($parentTrimmed) -or [string]::IsNullOrWhiteSpace($candidateTrimmed)) {
+		return $false
+	}
+
+	$parentPrefix = $parentTrimmed + "\"
+	return $candidateTrimmed.StartsWith($parentPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
 function Format-ByteSize {
 	param([Int64]$Bytes)
 
@@ -1241,6 +1290,59 @@ function Invoke-StagedTransfer {
 
 	if ($sourceItem.PSIsContainer) {
 		$destination = Join-Path $PasteIntoDirectory $itemName
+		if ($IsMove -and (Test-IsPathInside -ParentPath $SourcePath -CandidatePath $destination)) {
+			$message = ("Blocked move: destination is inside source. Source='{0}' | Dest='{1}'" -f $SourcePath, $destination)
+			Write-Host $message -ForegroundColor Red
+			Write-RunLog ("Safety guard blocked move | Reason=DestinationInsideSource | Source='{0}' | Dest='{1}'" -f $SourcePath, $destination)
+			return [pscustomobject]@{
+				ItemName = $itemName
+				Result   = [pscustomobject]@{
+					ExitCode       = 16
+					Succeeded      = $false
+					ThreadCount    = 0
+					Reason         = "Destination inside source blocked"
+					SourceMedia    = "-"
+					DestMedia      = "-"
+					Files          = 0
+					Bytes          = [int64]0
+					ElapsedSeconds = 0
+				}
+			}
+		}
+
+		$canUseNativeMove = $IsMove -and -not $MergeMode -and (-not (Test-Path -LiteralPath $destination)) -and (Test-IsSameVolumePath -SourcePath $SourcePath -DestinationPath $destination)
+		if ($canUseNativeMove) {
+			$fastTimer = [System.Diagnostics.Stopwatch]::StartNew()
+			$stats = [pscustomobject]@{ Files = 0; Bytes = [int64]0 }
+			if ($script:RunSettings.BenchmarkOutput) {
+				$stats = Get-DirectoryStats -PathValue $SourcePath
+			}
+			try {
+				Move-Item -LiteralPath $SourcePath -Destination $destination -Force -ErrorAction Stop
+				$fastTimer.Stop()
+				$elapsedSeconds = [Math]::Round($fastTimer.Elapsed.TotalSeconds, 3)
+				Write-RunLog ("FastPath native-move used | Type=Directory | Source='{0}' | Dest='{1}' | Elapsed={2}s" -f $SourcePath, $destination, $elapsedSeconds)
+				$result = [pscustomobject]@{
+					ExitCode       = 1
+					Succeeded      = $true
+					ThreadCount    = 0
+					Reason         = "Same-volume native move fast path"
+					SourceMedia    = "-"
+					DestMedia      = "-"
+					Files          = $stats.Files
+					Bytes          = $stats.Bytes
+					ElapsedSeconds = $elapsedSeconds
+				}
+				return [pscustomobject]@{
+					ItemName = $itemName
+					Result   = $result
+				}
+			}
+			catch {
+				Write-RunLog ("FastPath native-move fallback | Type=Directory | Source='{0}' | Dest='{1}' | Error='{2}'" -f $SourcePath, $destination, $_.Exception.Message)
+			}
+		}
+
 		if (-not (Test-Path -LiteralPath $destination)) {
 			New-Item -Path $destination -ItemType Directory -Force | Out-Null
 		}
@@ -1270,6 +1372,40 @@ function Invoke-StagedTransfer {
 		return [pscustomobject]@{
 			ItemName = $itemName
 			Result   = $null
+		}
+	}
+
+	$fileDestination = Join-Path $PasteIntoDirectory $itemName
+	$canUseNativeMove = $IsMove -and -not $MergeMode -and (-not (Test-Path -LiteralPath $fileDestination)) -and (Test-IsSameVolumePath -SourcePath $SourcePath -DestinationPath $fileDestination)
+	if ($canUseNativeMove) {
+		$fastTimer = [System.Diagnostics.Stopwatch]::StartNew()
+		$fileBytes = [int64]0
+		if ($script:RunSettings.BenchmarkOutput) {
+			$fileBytes = [int64]$sourceItem.Length
+		}
+		try {
+			Move-Item -LiteralPath $SourcePath -Destination $fileDestination -Force -ErrorAction Stop
+			$fastTimer.Stop()
+			$elapsedSeconds = [Math]::Round($fastTimer.Elapsed.TotalSeconds, 3)
+			Write-RunLog ("FastPath native-move used | Type=File | Source='{0}' | Dest='{1}' | Elapsed={2}s" -f $SourcePath, $fileDestination, $elapsedSeconds)
+			$result = [pscustomobject]@{
+				ExitCode       = 1
+				Succeeded      = $true
+				ThreadCount    = 0
+				Reason         = "Same-volume native move fast path"
+				SourceMedia    = "-"
+				DestMedia      = "-"
+				Files          = 1
+				Bytes          = $fileBytes
+				ElapsedSeconds = $elapsedSeconds
+			}
+			return [pscustomobject]@{
+				ItemName = $itemName
+				Result   = $result
+			}
+		}
+		catch {
+			Write-RunLog ("FastPath native-move fallback | Type=File | Source='{0}' | Dest='{1}' | Error='{2}'" -f $SourcePath, $fileDestination, $_.Exception.Message)
 		}
 	}
 	$result = Invoke-RobocopyTransfer -SourcePath $sourceDirectory -DestinationPath $PasteIntoDirectory -ModeFlag $ModeFlag -MergeMode:$MergeMode -SourceIsFile -FileFilters @($itemName)
@@ -1407,6 +1543,60 @@ function Invoke-StagedFileBatchTransfer {
 
 	$results = @()
 	$allSucceeded = $true
+	$canUseNativeMoveBatch = $IsMove -and -not $MergeMode -and (Test-IsSameVolumePath -SourcePath $sourceDirectory -DestinationPath $PasteIntoDirectory)
+	if ($canUseNativeMoveBatch) {
+		$hasConflict = $false
+		foreach ($name in [string[]]$fileNames.ToArray()) {
+			$destPath = Join-Path $PasteIntoDirectory $name
+			if (Test-Path -LiteralPath $destPath) {
+				$hasConflict = $true
+				break
+			}
+		}
+
+		if (-not $hasConflict) {
+			$fastTimer = [System.Diagnostics.Stopwatch]::StartNew()
+			$totalBytes = [int64]0
+			if ($script:RunSettings.BenchmarkOutput) {
+				foreach ($sourceFile in [string[]]$resolvedFilePaths.ToArray()) {
+					$item = Get-Item -LiteralPath $sourceFile -Force -ErrorAction SilentlyContinue
+					if ($item -and -not $item.PSIsContainer) {
+						$totalBytes += [int64]$item.Length
+					}
+				}
+			}
+
+			$movedCount = 0
+			try {
+				foreach ($sourceFile in [string[]]$resolvedFilePaths.ToArray()) {
+					Move-Item -LiteralPath $sourceFile -Destination $PasteIntoDirectory -Force -ErrorAction Stop
+					$movedCount++
+				}
+				$fastTimer.Stop()
+				$elapsedSeconds = [Math]::Round($fastTimer.Elapsed.TotalSeconds, 3)
+				Write-RunLog ("FastPath native-move used | Type=FileBatch | Source='{0}' | Dest='{1}' | Count={2} | Elapsed={3}s" -f $sourceDirectory, $PasteIntoDirectory, $movedCount, $elapsedSeconds)
+				$results += [pscustomobject]@{
+					ExitCode       = 1
+					Succeeded      = $true
+					ThreadCount    = 0
+					Reason         = "Same-volume native move fast path"
+					SourceMedia    = "-"
+					DestMedia      = "-"
+					Files          = $movedCount
+					Bytes          = $totalBytes
+					ElapsedSeconds = $elapsedSeconds
+				}
+				return [pscustomobject]@{
+					ItemName = ("{0} files from '{1}'" -f $movedCount, $sourceDirectory)
+					Results  = @($results)
+				}
+			}
+			catch {
+				Write-RunLog ("FastPath native-move fallback | Type=FileBatch | Source='{0}' | Dest='{1}' | Error='{2}'" -f $sourceDirectory, $PasteIntoDirectory, $_.Exception.Message)
+			}
+		}
+	}
+
 	$useWildcardAllFiles = Test-IsFullTopLevelFileSelection -SourceDirectory $sourceDirectory -SelectedFileNames ([string[]]$fileNames.ToArray())
 	if ($useWildcardAllFiles) {
 		$result = Invoke-RobocopyTransfer -SourcePath $sourceDirectory -DestinationPath $PasteIntoDirectory -ModeFlag $ModeFlag -MergeMode:$MergeMode -SourceIsFile -FileFilters @("*")
