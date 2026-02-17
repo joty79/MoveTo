@@ -1,4 +1,4 @@
-#Robocopy paste engine for staged files/folders (file or registry backend)
+#Robocopy paste engine for staged files/folders (file backend)
 
 #flags used when robocopying (overwrites files):
 
@@ -229,30 +229,10 @@ function Convert-ToUtcDateOrNull {
 	}
 }
 
-function Normalize-StageBackend {
-	param([string]$Value)
-
-	if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
-	$normalized = $Value.Trim().ToLowerInvariant()
-	if ($normalized -in @("file", "registry")) { return $normalized }
-	return $null
-}
-
 function Get-StageBackend {
 	param([object]$Config)
-
-	$backend = Normalize-StageBackend -Value $script:StageBackendDefault
-	if (-not $backend) { $backend = "file" }
-
-	$envBackend = Normalize-StageBackend -Value $env:RCWM_STAGE_BACKEND
-	if ($envBackend) { return $envBackend }
-
-	if ($Config -and $Config.PSObject.Properties.Name -contains "stage_backend") {
-		$configBackend = Normalize-StageBackend -Value ([string]$Config.stage_backend)
-		if ($configBackend) { return $configBackend }
-	}
-
-	return $backend
+	# Safety lock: stage backend is fixed to file.
+	return "file"
 }
 
 function Get-StagedFilePath {
@@ -621,7 +601,7 @@ function Get-PathMediaType {
 	param([string]$PathValue)
 
 	if (-not $PathValue) { return "Unknown" }
-	if ($PathValue -match '^[\\/]{2}') { return "Network" }
+	if ($PathValue -match '^[\\/]{2}') { return "LAN" }
 
 	$driveLetter = Get-DriveLetterFromPath -PathValue $PathValue
 	if (-not $driveLetter) { return "Unknown" }
@@ -633,6 +613,10 @@ function Get-PathMediaType {
 	try {
 		$partition = Get-Partition -DriveLetter $driveLetter -ErrorAction Stop
 		$disk = Get-Disk -Number $partition.DiskNumber -ErrorAction Stop
+		$busType = [string]$disk.BusType
+		if (-not [string]::IsNullOrWhiteSpace($busType) -and $busType.ToUpperInvariant() -eq "USB") {
+			return "USB"
+		}
 		$mediaType = [string]$disk.MediaType
 		if (-not [string]::IsNullOrWhiteSpace($mediaType) -and $mediaType -ne "Unspecified") {
 			return $mediaType.ToUpperInvariant()
@@ -661,38 +645,6 @@ function Get-PathMediaType {
 	}
 }
 
-function Normalize-RouteToken {
-	param([string]$Token)
-
-	if (-not $Token) { return $null }
-	$normalized = $Token.Trim().ToUpperInvariant()
-	if (-not $normalized) { return $null }
-	if ($normalized -eq "*" -or $normalized -eq "ANY") { return "*" }
-	if ($normalized -eq "UNC" -or $normalized -eq "NETWORK") { return "UNC" }
-	if ($normalized -match '^[A-Z]:?$') { return $normalized.Substring(0, 1) }
-	return $normalized.TrimEnd('\')
-}
-
-function Test-RouteMatch {
-	param(
-		[string]$Token,
-		[string]$PathValue
-	)
-
-	$normalizedToken = Normalize-RouteToken -Token $Token
-	if (-not $normalizedToken) { return $false }
-	if ($normalizedToken -eq "*") { return $true }
-	if ($normalizedToken -eq "UNC") { return ($PathValue -match '^[\\/]{2}') }
-
-	$driveLetter = Get-DriveLetterFromPath -PathValue $PathValue
-	if ($normalizedToken -match '^[A-Z]$') {
-		return ($driveLetter -eq $normalizedToken)
-	}
-
-	$normalizedPath = $PathValue.TrimEnd('\').ToUpperInvariant()
-	return $normalizedPath.StartsWith($normalizedToken)
-}
-
 function Get-TuneConfig {
 	param([string]$ConfigPath)
 
@@ -701,10 +653,16 @@ function Get-TuneConfig {
 		benchmark      = $false
 		hold_window    = $false
 		debug_mode     = $false
-		stage_backend  = "file"
-		default_mt     = $null
+		mt_rules       = [ordered]@{
+			ssd_to_ssd              = 32
+			ssd_hdd_any             = 8
+			hdd_to_hdd_diff_volume  = 8
+			hdd_to_hdd_same_volume  = 8
+			lan_any                 = 8
+			usb_any                 = 8
+			unknown_local           = 8
+		}
 		extra_args     = @()
-		routes         = @()
 	}
 
 	if (-not (Test-Path -LiteralPath $ConfigPath)) {
@@ -735,15 +693,64 @@ function Get-TuneConfig {
 			if ($null -ne $data.debug_mode) {
 				$config.debug_mode = [bool]$data.debug_mode
 			}
-			if ($null -ne $data.stage_backend) {
-				$cfgBackend = Normalize-StageBackend -Value ([string]$data.stage_backend)
-				if ($cfgBackend) { $config.stage_backend = $cfgBackend }
-			}
+			if ($data.mt_rules) {
+				$hasSsdHddAny = $false
+				$hasLanAny = $false
+				$hasUsbAny = $false
+				foreach ($ruleName in @(
+					"ssd_to_ssd",
+					"ssd_hdd_any",
+					"hdd_to_hdd_diff_volume",
+					"hdd_to_hdd_same_volume",
+					"lan_any",
+					"usb_any",
+					"unknown_local"
+				)) {
+					$ruleValue = $data.mt_rules.$ruleName
+					if ($null -ne $ruleValue -and "$ruleValue" -match '^\d+$') {
+						$mtRule = [int]$ruleValue
+						if ($mtRule -ge 1 -and $mtRule -le 128) {
+							$config.mt_rules[$ruleName] = $mtRule
+							if ($ruleName -eq "ssd_hdd_any") { $hasSsdHddAny = $true }
+							elseif ($ruleName -eq "lan_any") { $hasLanAny = $true }
+							elseif ($ruleName -eq "usb_any") { $hasUsbAny = $true }
+						}
+					}
+				}
 
-			if ($null -ne $data.default_mt -and "$($data.default_mt)" -match '^\d+$') {
-				$defaultMtValue = [int]$data.default_mt
-				if ($defaultMtValue -ge 1 -and $defaultMtValue -le 128) {
-					$config.default_mt = $defaultMtValue
+				if (-not $hasSsdHddAny) {
+					$legacySsdToHdd = $data.mt_rules.ssd_to_hdd
+					$legacyHddToSsd = $data.mt_rules.hdd_to_ssd
+					$legacyMixed = $null
+					if ($null -ne $legacySsdToHdd -and "$legacySsdToHdd" -match '^\d+$') {
+						$legacyMixed = [int]$legacySsdToHdd
+					}
+					elseif ($null -ne $legacyHddToSsd -and "$legacyHddToSsd" -match '^\d+$') {
+						$legacyMixed = [int]$legacyHddToSsd
+					}
+					if ($null -ne $legacyMixed -and $legacyMixed -ge 1 -and $legacyMixed -le 128) {
+						$config.mt_rules.ssd_hdd_any = $legacyMixed
+					}
+				}
+
+				if (-not $hasLanAny) {
+					$legacyNetworkAny = $data.mt_rules.network_any
+					if ($null -ne $legacyNetworkAny -and "$legacyNetworkAny" -match '^\d+$') {
+						$legacyLan = [int]$legacyNetworkAny
+						if ($legacyLan -ge 1 -and $legacyLan -le 128) {
+							$config.mt_rules.lan_any = $legacyLan
+						}
+					}
+				}
+
+				if (-not $hasUsbAny) {
+					$legacyUnknown = $data.mt_rules.unknown_local
+					if ($null -ne $legacyUnknown -and "$legacyUnknown" -match '^\d+$') {
+						$legacyUsb = [int]$legacyUnknown
+						if ($legacyUsb -ge 1 -and $legacyUsb -le 128) {
+							$config.mt_rules.usb_any = $legacyUsb
+						}
+					}
 				}
 			}
 
@@ -754,28 +761,31 @@ function Get-TuneConfig {
 				}
 			}
 
-			if ($data.routes) {
-				foreach ($route in @($data.routes)) {
-					$source = [string]$route.source
-					$destination = [string]$route.destination
-					$mtText = [string]$route.mt
-					if ($source -and $destination -and $mtText -match '^\d+$') {
-						$mtValue = [int]$mtText
-						if ($mtValue -ge 1 -and $mtValue -le 128) {
-							$config.routes += [pscustomobject]@{
-								source      = $source
-								destination = $destination
-								mt          = $mtValue
-							}
-						}
-					}
-				}
-			}
 		}
 	}
 	catch { }
 
 	return $config
+}
+
+function Get-MtRuleValue {
+	param(
+		[object]$Config,
+		[string]$RuleName,
+		[int]$FallbackValue
+	)
+
+	if ($Config -and $Config.mt_rules) {
+		$ruleCandidate = $Config.mt_rules.$RuleName
+		if ($null -ne $ruleCandidate -and "$ruleCandidate" -match '^\d+$') {
+			$mt = [int]$ruleCandidate
+			if ($mt -ge 1 -and $mt -le 128) {
+				return $mt
+			}
+		}
+	}
+
+	return $FallbackValue
 }
 
 function Get-RunSettings {
@@ -819,25 +829,6 @@ function Get-RunSettings {
 	}
 }
 
-function Get-RouteThreadOverride {
-	param(
-		[object]$Config,
-		[string]$SourcePath,
-		[string]$DestinationPath
-	)
-
-	if (-not $Config -or -not $Config.routes) { return $null }
-
-	foreach ($route in $Config.routes) {
-		if ((Test-RouteMatch -Token $route.source -PathValue $SourcePath) -and
-			(Test-RouteMatch -Token $route.destination -PathValue $DestinationPath)) {
-			return [int]$route.mt
-		}
-	}
-
-	return $null
-}
-
 function Get-ThreadDecision {
 	param(
 		[string]$SourcePath,
@@ -868,53 +859,47 @@ function Get-ThreadDecision {
 		}
 	}
 
-	$routeOverride = Get-RouteThreadOverride -Config $script:RoboTuneConfig -SourcePath $SourcePath -DestinationPath $DestinationPath
-	if ($routeOverride) {
-		return [pscustomobject]@{
-			ThreadCount = $routeOverride
-			Reason      = "RoboTune route override"
-			SourceMedia = $sourceMedia
-			DestMedia   = $destMedia
-			SourceDisk  = $sourceDisk
-			DestDisk    = $destDisk
-		}
+	# Media-based rules (configurable via RoboTune mt_rules).
+	if ($sourceMedia -eq "LAN" -or $destMedia -eq "LAN") {
+		$threads = Get-MtRuleValue -Config $script:RoboTuneConfig -RuleName "lan_any" -FallbackValue 8
+		$reason = "RoboTune mt_rules: lan_any"
 	}
-
-	if ($script:RoboTuneConfig.default_mt) {
-		return [pscustomobject]@{
-			ThreadCount = [int]$script:RoboTuneConfig.default_mt
-			Reason      = "RoboTune default_mt"
-			SourceMedia = $sourceMedia
-			DestMedia   = $destMedia
-			SourceDisk  = $sourceDisk
-			DestDisk    = $destDisk
-		}
-	}
-
-	# Conservative defaults for slow or seek-heavy paths
-	if ($sourceMedia -eq "NETWORK" -or $destMedia -eq "NETWORK") {
-		$threads = 8
-		$reason = "Network path"
-	}
-	elseif ($sourceMedia -eq "HDD" -or $destMedia -eq "HDD") {
-		$threads = 8
-		$reason = "HDD involved"
-	}
-	elseif ($samePhysicalDisk) {
-		$threads = 8
-		$reason = "Same physical disk"
-	}
-	elseif ($sameDriveLetter) {
-		$threads = 8
-		$reason = "Same drive letter"
+	elseif ($sourceMedia -eq "USB" -or $destMedia -eq "USB") {
+		$threads = Get-MtRuleValue -Config $script:RoboTuneConfig -RuleName "usb_any" -FallbackValue 8
+		$reason = "RoboTune mt_rules: usb_any"
 	}
 	elseif ($sourceMedia -eq "SSD" -and $destMedia -eq "SSD") {
-		$threads = 32
-		$reason = "SSD -> SSD"
+		$threads = Get-MtRuleValue -Config $script:RoboTuneConfig -RuleName "ssd_to_ssd" -FallbackValue 32
+		$reason = "RoboTune mt_rules: ssd_to_ssd"
+	}
+	elseif (
+		($sourceMedia -eq "SSD" -and $destMedia -eq "HDD") -or
+		($sourceMedia -eq "HDD" -and $destMedia -eq "SSD")
+	) {
+		$threads = Get-MtRuleValue -Config $script:RoboTuneConfig -RuleName "ssd_hdd_any" -FallbackValue 8
+		$reason = "RoboTune mt_rules: ssd_hdd_any"
+	}
+	elseif ($sourceMedia -eq "HDD" -and $destMedia -eq "HDD") {
+		if ($samePhysicalDisk -or $sameDriveLetter) {
+			$threads = Get-MtRuleValue -Config $script:RoboTuneConfig -RuleName "hdd_to_hdd_same_volume" -FallbackValue 8
+			$reason = "RoboTune mt_rules: hdd_to_hdd_same_volume"
+		}
+		else {
+			$threads = Get-MtRuleValue -Config $script:RoboTuneConfig -RuleName "hdd_to_hdd_diff_volume" -FallbackValue 8
+			$reason = "RoboTune mt_rules: hdd_to_hdd_diff_volume"
+		}
+	}
+	elseif ($samePhysicalDisk) {
+		$threads = Get-MtRuleValue -Config $script:RoboTuneConfig -RuleName "unknown_local" -FallbackValue 8
+		$reason = "RoboTune mt_rules: unknown_local (same physical disk)"
+	}
+	elseif ($sameDriveLetter) {
+		$threads = Get-MtRuleValue -Config $script:RoboTuneConfig -RuleName "unknown_local" -FallbackValue 8
+		$reason = "RoboTune mt_rules: unknown_local (same drive letter)"
 	}
 	else {
-		$threads = 16
-		$reason = "Unknown/mixed local media"
+		$threads = Get-MtRuleValue -Config $script:RoboTuneConfig -RuleName "unknown_local" -FallbackValue 8
+		$reason = "RoboTune mt_rules: unknown_local"
 	}
 
 	return [pscustomobject]@{
@@ -1408,6 +1393,7 @@ function Invoke-StagedTransfer {
 			Write-RunLog ("FastPath native-move fallback | Type=File | Source='{0}' | Dest='{1}' | Error='{2}'" -f $SourcePath, $fileDestination, $_.Exception.Message)
 		}
 	}
+
 	$result = Invoke-RobocopyTransfer -SourcePath $sourceDirectory -DestinationPath $PasteIntoDirectory -ModeFlag $ModeFlag -MergeMode:$MergeMode -SourceIsFile -FileFilters @($itemName)
 
 	if ($IsMove) {
@@ -2136,15 +2122,18 @@ try {
 
 		$sessionTimer.Stop()
 		$phaseExecuteMs = [int]$sessionTimer.ElapsedMilliseconds
+		$phasePreExecMs = [int]($phaseStageResolveMs + $phasePayloadPrepMs)
+		$phaseTotalMs = [int]($phasePreExecMs + $phaseExecuteMs)
+		$totalSeconds = [Math]::Round($sessionTimer.Elapsed.TotalSeconds, 3)
+		$completedOps = @($sessionResults | Where-Object {
+			$null -ne $_ -and $_.PSObject -and $_.PSObject.Properties.Match("Succeeded").Count -gt 0
+		})
+
 		if ($script:RunSettings.BenchmarkOutput -and $sessionResults.Count -gt 0) {
 			# Defensive filtering: count only structured transfer result objects.
-			$completedOps = @($sessionResults | Where-Object {
-				$null -ne $_ -and $_.PSObject -and $_.PSObject.Properties.Match("Succeeded").Count -gt 0
-			})
 			$totalBytes = [int64](($completedOps | Measure-Object -Property Bytes -Sum).Sum)
 			$totalFiles = [int](($completedOps | Measure-Object -Property Files -Sum).Sum)
 			$failedOps = @($completedOps | Where-Object { -not $_.Succeeded }).Count
-			$totalSeconds = [Math]::Round($sessionTimer.Elapsed.TotalSeconds, 3)
 			$aggregateThroughput = "-"
 			if ($sessionTimer.Elapsed.TotalSeconds -gt 0 -and $totalBytes -gt 0) {
 				$aggregateThroughput = ("{0:N2} MB/s" -f (($totalBytes / 1MB) / $sessionTimer.Elapsed.TotalSeconds))
@@ -2155,10 +2144,13 @@ try {
 			Write-Host ("Operations: {0} | Failed: {1}" -f $completedOps.Count, $failedOps) -ForegroundColor Cyan
 			Write-Host ("Total files: {0} | Total data: {1}" -f $totalFiles, (Format-ByteSize -Bytes $totalBytes)) -ForegroundColor Cyan
 			Write-Host ("Total time: {0}s | Avg throughput~{1}" -f $totalSeconds, $aggregateThroughput) -ForegroundColor Cyan
-			$phasePreExecMs = [int]($phaseStageResolveMs + $phasePayloadPrepMs)
-			$phaseTotalMs = [int]($phasePreExecMs + $phaseExecuteMs)
 			Write-Host ("Phase timing: Resolve={0}ms | Prep={1}ms | Execute={2}ms | Total~{3}ms" -f $phaseStageResolveMs, $phasePayloadPrepMs, $phaseExecuteMs, $phaseTotalMs) -ForegroundColor DarkCyan
 			Write-RunLog ("Session benchmark | Ops={0} | Failed={1} | Files={2} | Bytes={3} | Time={4}s | Throughput={5}" -f $completedOps.Count, $failedOps, $totalFiles, $totalBytes, $totalSeconds, $aggregateThroughput)
+		}
+		else {
+			Write-Host ("Elapsed: {0}s | Operations: {1}" -f $totalSeconds, $completedOps.Count) -ForegroundColor Cyan
+			Write-Host ("Phase timing: Resolve={0}ms | Prep={1}ms | Execute={2}ms | Total~{3}ms" -f $phaseStageResolveMs, $phasePayloadPrepMs, $phaseExecuteMs, $phaseTotalMs) -ForegroundColor DarkCyan
+			Write-RunLog ("Session timing | Ops={0} | Time={1}s | PhaseResolve={2}ms | PhasePrep={3}ms | PhaseExecute={4}ms | PhaseTotal={5}ms" -f $completedOps.Count, $totalSeconds, $phaseStageResolveMs, $phasePayloadPrepMs, $phaseExecuteMs, $phaseTotalMs)
 		}
 
 		Clear-StagedPayload -CommandName $command -Backend $script:StageBackend
