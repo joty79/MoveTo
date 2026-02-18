@@ -624,6 +624,13 @@
 - Files affected: `SyncMoveToMenu.ps1`, `docs/PROJECT_RULES.md`.
 - Validation/tests: PowerShell parser validation (`SyncMoveToMenu.ps1`) + runtime sync run χωρίς bind errors.
 
+### 2026-02-18 - MoveTune migration + installer parity with Robocopy flow
+- Problem: Το MoveTo έμεινε με legacy `RoboTune*` naming και installer behavior που διέφερε από το Robocopy baseline (self-update prompt, no branch picker, uninstall χωρίς preserve core launcher scripts).
+- Root cause: Ιστορικό divergence μεταξύ των δύο repos σε tuning/installer evolution.
+- Guardrail: `MoveTune` γίνεται primary (`MoveTune.ps1`/`MoveTune.json`) με backward compatibility fallback (`RoboTune.ps1` wrapper + legacy config fallback), installer χωρίς self-update prompt, με GitHub branch selection, και uninstall preserve (`Install.ps1`, `MoveTune.ps1`, `RoboTune.ps1`).
+- Files affected: `Install.ps1`, `MoveTune.ps1`, `MoveTune.json`, `RoboTune.ps1`, `rcp.ps1`, `rcopySingle.ps1`, `README.md`, `docs/PROJECT_RULES.md`.
+- Validation/tests: PowerShell parser validation (`Parser::ParseFile`) OK για `Install.ps1`, `MoveTune.ps1`, `RoboTune.ps1`, `rcp.ps1`, `rcopySingle.ps1`.
+
 ## Entry Template
 ### YYYY-MM-DD - Short decision title
 - Problem:

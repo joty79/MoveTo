@@ -11,8 +11,7 @@ param(
     [string]$GitHubRef = 'master',
     [string]$GitHubZipUrl = '',
     [switch]$Force,
-    [switch]$NoExplorerRestart,
-    [switch]$SkipSelfUpdateCheck
+    [switch]$NoExplorerRestart
 )
 
 Set-StrictMode -Version Latest
@@ -23,7 +22,6 @@ $script:LegacyRoot = 'D:\Users\joty79\scripts\MoveTo'
 $script:UninstallKeyPath = 'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\MoveToContext'
 $script:Warnings = [System.Collections.Generic.List[string]]::new()
 $script:TempPackageRoots = [System.Collections.Generic.List[string]]::new()
-$script:InitialBoundParameters = @{} + $PSBoundParameters
 $script:HasCliArgs = $PSBoundParameters.Count -gt 0
 
 function Resolve-NormalizedPath {
@@ -83,116 +81,6 @@ function Invoke-Preflight {
     return $true
 }
 
-function Get-ReinvokeArgumentsFromBoundParameters {
-    param([hashtable]$BoundParameters)
-    $result = New-Object System.Collections.Generic.List[string]
-    foreach ($key in @($BoundParameters.Keys | Sort-Object)) {
-        if ($key -eq 'SkipSelfUpdateCheck') { continue }
-        $value = $BoundParameters[$key]
-        if ($value -is [System.Management.Automation.SwitchParameter]) {
-            if ($value.IsPresent) { [void]$result.Add(("-{0}" -f $key)) }
-            continue
-        }
-        if ($null -eq $value) { continue }
-        [void]$result.Add(("-{0}" -f $key))
-        [void]$result.Add([string]$value)
-    }
-    return @($result)
-}
-
-function Get-NormalizedTextHash {
-    param([AllowEmptyString()][string]$Text)
-    if ($null -eq $Text) { return '' }
-    $normalized = $Text -replace "`r`n", "`n"
-    $normalized = $normalized -replace "`r", "`n"
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($normalized)
-    $sha = [System.Security.Cryptography.SHA256]::Create()
-    try { $hashBytes = $sha.ComputeHash($bytes) } finally { $sha.Dispose() }
-    return ([System.BitConverter]::ToString($hashBytes).Replace('-', '').ToLowerInvariant())
-}
-
-function Invoke-InstallerSelfUpdateCheck {
-    if ($SkipSelfUpdateCheck) { return $false }
-
-    $currentScript = $PSCommandPath
-    if ([string]::IsNullOrWhiteSpace($currentScript) -and $MyInvocation.MyCommand) {
-        $currentScript = $MyInvocation.MyCommand.Definition
-    }
-    if ([string]::IsNullOrWhiteSpace($currentScript) -or -not (Test-Path -LiteralPath $currentScript)) {
-        return $false
-    }
-
-    $rawUrl = ("https://raw.githubusercontent.com/{0}/{1}/Install.ps1" -f $GitHubRepo, $GitHubRef)
-    $remoteText = $null
-    try {
-        $resp = Invoke-WebRequest -Uri $rawUrl -Headers @{ 'User-Agent' = 'MoveToContextInstaller/1.0' } -UseBasicParsing -Method Get
-        $remoteText = [string]$resp.Content
-    }
-    catch {
-        Write-Host ("[!] Self-update check skipped: cannot reach GitHub ({0})" -f $_.Exception.Message) -ForegroundColor Yellow
-        return $false
-    }
-
-    if ([string]::IsNullOrWhiteSpace($remoteText)) { return $false }
-
-    $localText = Get-Content -LiteralPath $currentScript -Raw -Encoding UTF8
-    $localHash = Get-NormalizedTextHash -Text $localText
-    $remoteHash = Get-NormalizedTextHash -Text $remoteText
-
-    if ($localHash -eq $remoteHash) {
-        Write-Host '[+] Installer self-check: latest Install.ps1 detected.' -ForegroundColor Green
-        return $false
-    }
-
-    Write-Host '[!] Newer Install.ps1 detected on GitHub.' -ForegroundColor Yellow
-    $allowUpdate = $Force
-    if (-not $allowUpdate) {
-        $answer = (Read-Host 'Download latest Install.ps1 to this directory and relaunch now? [Y/n]').Trim().ToLowerInvariant()
-        if ($answer -in @('n', 'no')) {
-            Write-Host 'Continuing with current installer.' -ForegroundColor Yellow
-            return $false
-        }
-        $allowUpdate = $true
-    }
-    if (-not $allowUpdate) { return $false }
-
-    $scriptDir = Split-Path -Path $currentScript -Parent
-    $preferredPath = Join-Path $scriptDir 'Install.ps1'
-    $tempPath = Join-Path $scriptDir ("Install.ps1.new_{0}" -f ([Guid]::NewGuid().ToString('N')))
-    $launchPath = $preferredPath
-
-    try {
-        Set-Content -LiteralPath $tempPath -Value $remoteText -Encoding UTF8
-        try {
-            Move-Item -LiteralPath $tempPath -Destination $preferredPath -Force
-        }
-        catch {
-            $launchPath = Join-Path $scriptDir 'Install_latest.ps1'
-            Copy-Item -LiteralPath $tempPath -Destination $launchPath -Force
-            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
-        }
-
-        $argList = New-Object System.Collections.Generic.List[string]
-        [void]$argList.Add('-NoProfile')
-        [void]$argList.Add('-ExecutionPolicy')
-        [void]$argList.Add('Bypass')
-        [void]$argList.Add('-File')
-        [void]$argList.Add($launchPath)
-        [void]$argList.Add('-SkipSelfUpdateCheck')
-        foreach ($arg in @(Get-ReinvokeArgumentsFromBoundParameters -BoundParameters $script:InitialBoundParameters)) {
-            [void]$argList.Add($arg)
-        }
-
-        Write-Host ("[+] Launching latest installer: {0}" -f $launchPath) -ForegroundColor Green
-        Start-Process -FilePath 'pwsh.exe' -ArgumentList @($argList)
-        return $true
-    }
-    catch {
-        Write-Host ("[!] Self-update failed, continuing current installer: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
-        return $false
-    }
-}
-
 function Get-RequiredPackageEntries {
     @(
         'MoveTo.vbs',
@@ -205,8 +93,9 @@ function Get-RequiredPackageEntries {
         'rcp.ps1',
         'RoboCopy_Silent.vbs',
         'RoboPaste_Admin.vbs',
-        'RoboTune.ps1',
-        'RoboTune.json'
+        'MoveTune.ps1',
+        'MoveTune.json',
+        'RoboTune.ps1'
     )
 }
 
@@ -215,6 +104,9 @@ function Assert-RequiredPackageFiles {
     foreach ($entry in @(Get-RequiredPackageEntries)) {
         $full = Join-Path $Root $entry
         if (-not (Test-Path -LiteralPath $full)) {
+            if ($entry -eq 'MoveTune.ps1' -and (Test-Path -LiteralPath (Join-Path $Root 'RoboTune.ps1'))) { continue }
+            if ($entry -eq 'MoveTune.json' -and (Test-Path -LiteralPath (Join-Path $Root 'RoboTune.json'))) { continue }
+            if ($entry -eq 'RoboTune.ps1' -and (Test-Path -LiteralPath (Join-Path $Root 'MoveTune.ps1'))) { continue }
             throw "Missing source file: $full"
         }
     }
@@ -314,6 +206,20 @@ function Deploy-PackageFiles {
     )
     foreach ($entry in @(Get-RequiredPackageEntries)) {
         $src = Join-Path $SourceRoot $entry
+        if (-not (Test-Path -LiteralPath $src)) {
+            if ($entry -eq 'MoveTune.ps1') {
+                $legacySrc = Join-Path $SourceRoot 'RoboTune.ps1'
+                if (Test-Path -LiteralPath $legacySrc) { $src = $legacySrc }
+            }
+            elseif ($entry -eq 'MoveTune.json') {
+                $legacyJsonSrc = Join-Path $SourceRoot 'RoboTune.json'
+                if (Test-Path -LiteralPath $legacyJsonSrc) { $src = $legacyJsonSrc }
+            }
+            elseif ($entry -eq 'RoboTune.ps1') {
+                $newSrc = Join-Path $SourceRoot 'MoveTune.ps1'
+                if (Test-Path -LiteralPath $newSrc) { $src = $newSrc }
+            }
+        }
         $dst = Join-Path $InstallRoot $entry
         Copy-FileIfNeeded -Source $src -Destination $dst
     }
@@ -393,8 +299,7 @@ function Add-RegStringValue {
         [Parameter(Mandatory)][string]$Name,
         [Parameter(Mandatory)][AllowEmptyString()][string]$Value
     )
-    $safeValue = if ($Value -eq '') { '""' } else { $Value }
-    Invoke-RegCommand -Arguments @('add', $Key, '/v', $Name, '/t', 'REG_SZ', '/d', $safeValue, '/f') | Out-Null
+    Invoke-RegCommand -Arguments @('add', $Key, '/v', $Name, '/t', 'REG_SZ', '/d', $Value, '/f') | Out-Null
 }
 
 function Add-RegDefaultValue {
@@ -402,8 +307,7 @@ function Add-RegDefaultValue {
         [Parameter(Mandatory)][string]$Key,
         [Parameter(Mandatory)][AllowEmptyString()][string]$Value
     )
-    $safeValue = if ($Value -eq '') { '""' } else { $Value }
-    Invoke-RegCommand -Arguments @('add', $Key, '/ve', '/t', 'REG_SZ', '/d', $safeValue, '/f') | Out-Null
+    Invoke-RegCommand -Arguments @('add', $Key, '/ve', '/t', 'REG_SZ', '/d', $Value, '/f') | Out-Null
 }
 
 function Remove-RegTree {
@@ -628,17 +532,31 @@ function Invoke-Uninstall {
             if ([string]::IsNullOrWhiteSpace($selfPath) -and $MyInvocation.MyCommand) {
                 $selfPath = $MyInvocation.MyCommand.Definition
             }
-            $installRootNorm = Resolve-NormalizedPath -Path $InstallPath
-            $selfNorm = if ([string]::IsNullOrWhiteSpace($selfPath)) { '' } else { Resolve-NormalizedPath -Path $selfPath }
-            if ($selfNorm.StartsWith($installRootNorm, [System.StringComparison]::OrdinalIgnoreCase)) {
-                $cmd = "/c ping 127.0.0.1 -n 3 >nul & rmdir /s /q `"$InstallPath`""
-                Start-Process -FilePath 'cmd.exe' -ArgumentList $cmd -WindowStyle Hidden
-                Write-Step -Text 'Scheduled self-delete of install directory.' -Color Gray
+
+            $installerKeepPath = Join-Path $InstallPath 'Install.ps1'
+            $moveTuneKeepPath = Join-Path $InstallPath 'MoveTune.ps1'
+            $legacyTuneKeepPath = Join-Path $InstallPath 'RoboTune.ps1'
+            $preserveNames = @('Install.ps1', 'MoveTune.ps1', 'RoboTune.ps1')
+            if (-not [string]::IsNullOrWhiteSpace($selfPath) -and (Test-Path -LiteralPath $selfPath)) {
+                $selfNorm = Resolve-NormalizedPath -Path $selfPath
+                $keepNorm = Resolve-NormalizedPath -Path $installerKeepPath
+                if (-not $selfNorm.Equals($keepNorm, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    Copy-Item -LiteralPath $selfPath -Destination $installerKeepPath -Force
+                    Write-Step -Text 'Refreshed preserved Install.ps1 in install directory.' -Color Gray
+                }
             }
-            else {
-                Remove-Item -LiteralPath $InstallPath -Recurse -Force -ErrorAction Stop
-                Write-Step -Text 'Removed install directory.' -Color Gray
+
+            foreach ($item in @(Get-ChildItem -LiteralPath $InstallPath -Force -ErrorAction SilentlyContinue)) {
+                if ($preserveNames -contains $item.Name) { continue }
+                try {
+                    Remove-Item -LiteralPath $item.FullName -Recurse -Force -ErrorAction Stop
+                }
+                catch {
+                    Add-Warning -Message ("Could not remove item during uninstall cleanup: {0}" -f $item.FullName)
+                }
             }
+
+            Write-Step -Text ("Uninstall cleanup complete. Preserved: {0}, {1}, {2}" -f $installerKeepPath, $moveTuneKeepPath, $legacyTuneKeepPath) -Color Gray
         }
 
         Restart-ExplorerShell
@@ -661,7 +579,7 @@ function Show-InteractiveMenu {
         Write-Host '[2] Update' -ForegroundColor Yellow
         Write-Host '[3] Uninstall' -ForegroundColor Red
         Write-Host '[4] Open install directory' -ForegroundColor Cyan
-        Write-Host '[5] Launch RoboTune' -ForegroundColor Cyan
+        Write-Host '[5] Launch MoveTune' -ForegroundColor Cyan
         Write-Host '[0] Exit' -ForegroundColor Gray
         Write-Host ''
         $choice = (Read-Host 'Select option').Trim()
@@ -670,7 +588,7 @@ function Show-InteractiveMenu {
             '2' { return 'Update' }
             '3' { return 'Uninstall' }
             '4' { return 'OpenInstallDirectory' }
-            '5' { return 'LaunchRoboTune' }
+            '5' { return 'LaunchMoveTune' }
             '0' { return 'Exit' }
             default {
                 Write-Host 'Invalid option. Press any key...' -ForegroundColor Red
@@ -687,6 +605,89 @@ function Confirm-Action {
     $answer -eq 'y'
 }
 
+function Get-GitHubBranchNames {
+    param([Parameter(Mandatory)][string]$Repo)
+
+    $apiUrl = "https://api.github.com/repos/$Repo/branches?per_page=100"
+    try {
+        $resp = Invoke-RestMethod -Uri $apiUrl -Headers @{ 'User-Agent' = 'MoveToContextInstaller/1.0' } -Method Get
+        if (-not $resp) { return @() }
+        $names = @($resp | ForEach-Object { [string]$_.name } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        return @($names | Select-Object -Unique)
+    }
+    catch {
+        Write-Host ("[!] Could not fetch branch list from GitHub: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+        return @()
+    }
+}
+
+function Read-GitHubRefInteractive {
+    param(
+        [string]$DefaultRef = 'master',
+        [string]$Repo = 'joty79/MoveTo'
+    )
+
+    $normalizedDefault = if ([string]::IsNullOrWhiteSpace($DefaultRef)) { 'master' } else { $DefaultRef.Trim() }
+    $branches = @(Get-GitHubBranchNames -Repo $Repo)
+
+    if ($branches.Count -gt 0) {
+        if ($branches -notcontains $normalizedDefault) {
+            $branches = @($normalizedDefault) + @($branches)
+        }
+        else {
+            $branches = @($normalizedDefault) + @($branches | Where-Object { $_ -ne $normalizedDefault })
+        }
+        $branches = @($branches | Select-Object -Unique)
+
+        Write-Host ''
+        Write-Host ("Available branches for {0}:" -f $Repo) -ForegroundColor Cyan
+        for ($i = 0; $i -lt $branches.Count; $i++) {
+            $n = $i + 1
+            $name = $branches[$i]
+            $suffix = if ($name -eq $normalizedDefault) { " (default)" } else { "" }
+            Write-Host ("[{0}] {1}{2}" -f $n, $name, $suffix) -ForegroundColor Gray
+        }
+        Write-Host "[M] Manual branch/ref input" -ForegroundColor Gray
+        Write-Host "[Enter] Use default" -ForegroundColor Gray
+
+        while ($true) {
+            $choice = (Read-Host ("Select branch number (blank = {0})" -f $normalizedDefault)).Trim()
+            if ([string]::IsNullOrWhiteSpace($choice)) {
+                return $normalizedDefault
+            }
+            if ($choice.Equals('m', [System.StringComparison]::OrdinalIgnoreCase)) {
+                break
+            }
+            if ($choice -match '^\d+$') {
+                $index = [int]$choice
+                if ($index -ge 1 -and $index -le $branches.Count) {
+                    return $branches[$index - 1]
+                }
+            }
+            Write-Host 'Invalid selection. Choose a number, M, or Enter.' -ForegroundColor Yellow
+        }
+    }
+
+    while ($true) {
+        $raw = Read-Host ("GitHub branch/ref (blank = {0})" -f $normalizedDefault)
+        $candidate = if ($null -eq $raw) { '' } else { $raw.Trim() }
+        if ([string]::IsNullOrWhiteSpace($candidate)) {
+            return $normalizedDefault
+        }
+
+        if ($candidate.StartsWith('refs/heads/', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $candidate = $candidate.Substring('refs/heads/'.Length)
+        }
+
+        if ([string]::IsNullOrWhiteSpace($candidate)) {
+            Write-Host 'Invalid branch/ref. Try again.' -ForegroundColor Yellow
+            continue
+        }
+
+        return $candidate
+    }
+}
+
 function Open-InstallDirectory {
     if (-not (Test-Path -LiteralPath $InstallPath)) {
         Write-Host ("Install directory not found: {0}" -f $InstallPath) -ForegroundColor Yellow
@@ -696,35 +697,47 @@ function Open-InstallDirectory {
     return 0
 }
 
-function Launch-RoboTune {
-    $scriptPath = Join-Path $InstallPath 'RoboTune.ps1'
+function Launch-MoveTune {
+    $scriptPath = Join-Path $InstallPath 'MoveTune.ps1'
     if (-not (Test-Path -LiteralPath $scriptPath)) {
-        Write-Host ("RoboTune is not installed yet: {0}" -f $scriptPath) -ForegroundColor Yellow
-        return 1
+        $legacyScriptPath = Join-Path $InstallPath 'RoboTune.ps1'
+        if (Test-Path -LiteralPath $legacyScriptPath) {
+            $scriptPath = $legacyScriptPath
+        }
+        else {
+            Write-Host ("MoveTune is not installed yet: {0}" -f $scriptPath) -ForegroundColor Yellow
+            return 1
+        }
     }
     Start-Process pwsh.exe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $scriptPath)
     return 0
 }
 
 function Invoke-Main {
-    if (Invoke-InstallerSelfUpdateCheck) { return 0 }
-
     if (-not $script:HasCliArgs) {
         $menuAction = Show-InteractiveMenu
         if ($menuAction -eq 'Exit') { return 0 }
         if ($menuAction -eq 'OpenInstallDirectory') { return (Open-InstallDirectory) }
-        if ($menuAction -eq 'LaunchRoboTune') { return (Launch-RoboTune) }
+        if ($menuAction -eq 'LaunchMoveTune') { return (Launch-MoveTune) }
         $Action = $menuAction
     }
 
     switch ($Action) {
         'Install' {
             $PackageSource = 'GitHub'
+            if (-not $script:HasCliArgs) {
+                $GitHubRef = Read-GitHubRefInteractive -DefaultRef $GitHubRef -Repo $GitHubRepo
+            }
+            Write-Host ("Using GitHub ref: {0}" -f $GitHubRef) -ForegroundColor DarkCyan
             if (-not (Confirm-Action -Prompt "Install MoveTo Context Menu to '$InstallPath'?")) { Write-Host 'Cancelled.' -ForegroundColor Yellow; return 0 }
             return (Invoke-InstallOrUpdate -Mode 'Install')
         }
         'Update' {
             $PackageSource = 'GitHub'
+            if (-not $script:HasCliArgs) {
+                $GitHubRef = Read-GitHubRefInteractive -DefaultRef $GitHubRef -Repo $GitHubRepo
+            }
+            Write-Host ("Using GitHub ref: {0}" -f $GitHubRef) -ForegroundColor DarkCyan
             if (-not (Confirm-Action -Prompt "Update MoveTo Context Menu at '$InstallPath'?")) { Write-Host 'Cancelled.' -ForegroundColor Yellow; return 0 }
             return (Invoke-InstallOrUpdate -Mode 'Update')
         }

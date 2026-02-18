@@ -45,7 +45,7 @@
 
 ## Repository Layout
 
-- Root: active runtime scripts/wrappers (`MoveTo.vbs`, `rcopySingle.ps1`, `rcp.ps1`, `RoboTune.*`, destination scripts, sync script).
+- Root: active runtime scripts/wrappers (`MoveTo.vbs`, `rcopySingle.ps1`, `rcp.ps1`, `MoveTune.*`, destination scripts, sync script).
 - `docs\`: project notes/rules and Gemini working files.
 - `logs\`: runtime logs.
 - `source\`: legacy/reference artifacts (`MoveTo.cs`, `MoveTo.ps1`, `MoveTo.exe`), not used by current runtime pipeline.
@@ -56,7 +56,7 @@
 - `logs\run_log.txt`
 - `logs\stage_log.txt`
 - `logs\error_log.txt`
-- `logs\robocopy_debug.log` (when debug mode is enabled in `RoboTune.json`)
+- `logs\robocopy_debug.log` (when debug mode is enabled in `MoveTune.json`)
 
 ## Troubleshooting
 

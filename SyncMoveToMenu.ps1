@@ -67,6 +67,8 @@ function Ensure-StaticActionEntries {
     $editCmd = "wscript.exe `"$editVbs`""
     $addCmd = "wscript.exe `"$addVbs`" `"%1`""
 
+    $fileRootKey = "HKCU\Software\Classes\*\shell\$menuRootName"
+    $dirRootKey = "HKCU\Software\Classes\Directory\shell\$menuRootName"
     $fileActionsKey = "HKCU\Software\Classes\*\shell\$menuRootName\shell\$actionsKeyName"
     $dirActionsKey = "HKCU\Software\Classes\Directory\shell\$menuRootName\shell\$actionsKeyName"
 
@@ -78,6 +80,10 @@ function Ensure-StaticActionEntries {
     )) {
         Remove-RegKeyTree -Key $oldKey
     }
+
+    # Heal root cascade values on every refresh (must be true empty REG_SZ, not literal "")
+    Add-RegValue -Key $fileRootKey -Name "SubCommands" -Type "REG_SZ" -Data ""
+    Add-RegValue -Key $dirRootKey -Name "SubCommands" -Type "REG_SZ" -Data ""
 
     # Create Actions submenus (new layout)
     Add-RegValue -Key $fileActionsKey -Name "MUIVerb" -Type "REG_SZ" -Data "[Actions]"

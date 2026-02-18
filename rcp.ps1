@@ -1041,14 +1041,20 @@ function Write-RunLog {
 	catch { }
 }
 
-function Open-RoboTuneWindow {
-	$roboTunePath = Join-Path $PSScriptRoot "RoboTune.ps1"
-	if (-not (Test-Path -LiteralPath $roboTunePath)) {
-		Write-Host "RoboTune.ps1 not found: $roboTunePath" -ForegroundColor Yellow
-		return
+function Open-MoveTuneWindow {
+	$moveTunePath = Join-Path $PSScriptRoot "MoveTune.ps1"
+	if (-not (Test-Path -LiteralPath $moveTunePath)) {
+		$legacyTunePath = Join-Path $PSScriptRoot "RoboTune.ps1"
+		if (Test-Path -LiteralPath $legacyTunePath) {
+			$moveTunePath = $legacyTunePath
+		}
+		else {
+			Write-Host "MoveTune.ps1 not found: $moveTunePath" -ForegroundColor Yellow
+			return
+		}
 	}
 
-	$argLine = "-NoProfile -ExecutionPolicy Bypass -File `"$roboTunePath`""
+	$argLine = "-NoProfile -ExecutionPolicy Bypass -File `"$moveTunePath`""
 	Start-Process -FilePath "pwsh.exe" -ArgumentList $argLine | Out-Null
 }
 
@@ -1058,15 +1064,15 @@ function Wait-ForCloseOrTune {
 	if (-not $Enabled) { return }
 
 	Write-Host ""
-	Write-Host "[Enter]=Close  [T]=Open RoboTune  [Esc]=Close" -ForegroundColor Yellow
+	Write-Host "[Enter]=Close  [T]=Open MoveTune  [Esc]=Close" -ForegroundColor Yellow
 	while ($true) {
 		$keyInfo = [Console]::ReadKey($true)
 		switch ($keyInfo.Key) {
 			"Enter" { return }
 			"Escape" { return }
 			"T" {
-				Open-RoboTuneWindow
-				Write-Host "Opened RoboTune.ps1 in a new PowerShell window." -ForegroundColor Cyan
+				Open-MoveTuneWindow
+				Write-Host "Opened MoveTune.ps1 in a new PowerShell window." -ForegroundColor Cyan
 			}
 			default {
 				Write-Host "Use Enter, T, or Esc." -ForegroundColor DarkGray
@@ -1775,7 +1781,17 @@ if (-not (Test-Path -LiteralPath $script:LogsDir)) {
 $errorLogPath = Join-Path $script:LogsDir "error_log.txt"
 $script:RunLogPath = Join-Path $script:LogsDir "run_log.txt"
 $script:RobocopyDebugLogPath = Join-Path $script:LogsDir "robocopy_debug.log"
-$tuneConfigPath = Join-Path $PSScriptRoot "RoboTune.json"
+$moveTuneConfigPath = Join-Path $PSScriptRoot "MoveTune.json"
+$legacyTuneConfigPath = Join-Path $PSScriptRoot "RoboTune.json"
+$tuneConfigPath = if (Test-Path -LiteralPath $moveTuneConfigPath) {
+	$moveTuneConfigPath
+}
+elseif (Test-Path -LiteralPath $legacyTuneConfigPath) {
+	$legacyTuneConfigPath
+}
+else {
+	$moveTuneConfigPath
+}
 $script:RoboTuneConfig = Get-TuneConfig -ConfigPath $tuneConfigPath
 $script:StageBackend = Get-StageBackend -Config $script:RoboTuneConfig
 $script:RunSettings = Get-RunSettings -Config $script:RoboTuneConfig
