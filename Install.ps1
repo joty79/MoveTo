@@ -94,8 +94,7 @@ function Get-RequiredPackageEntries {
         'RoboCopy_Silent.vbs',
         'RoboPaste_Admin.vbs',
         'MoveTune.ps1',
-        'MoveTune.json',
-        'RoboTune.ps1'
+        'MoveTune.json'
     )
 }
 
@@ -104,9 +103,6 @@ function Assert-RequiredPackageFiles {
     foreach ($entry in @(Get-RequiredPackageEntries)) {
         $full = Join-Path $Root $entry
         if (-not (Test-Path -LiteralPath $full)) {
-            if ($entry -eq 'MoveTune.ps1' -and (Test-Path -LiteralPath (Join-Path $Root 'RoboTune.ps1'))) { continue }
-            if ($entry -eq 'MoveTune.json' -and (Test-Path -LiteralPath (Join-Path $Root 'RoboTune.json'))) { continue }
-            if ($entry -eq 'RoboTune.ps1' -and (Test-Path -LiteralPath (Join-Path $Root 'MoveTune.ps1'))) { continue }
             throw "Missing source file: $full"
         }
     }
@@ -206,22 +202,16 @@ function Deploy-PackageFiles {
     )
     foreach ($entry in @(Get-RequiredPackageEntries)) {
         $src = Join-Path $SourceRoot $entry
-        if (-not (Test-Path -LiteralPath $src)) {
-            if ($entry -eq 'MoveTune.ps1') {
-                $legacySrc = Join-Path $SourceRoot 'RoboTune.ps1'
-                if (Test-Path -LiteralPath $legacySrc) { $src = $legacySrc }
-            }
-            elseif ($entry -eq 'MoveTune.json') {
-                $legacyJsonSrc = Join-Path $SourceRoot 'RoboTune.json'
-                if (Test-Path -LiteralPath $legacyJsonSrc) { $src = $legacyJsonSrc }
-            }
-            elseif ($entry -eq 'RoboTune.ps1') {
-                $newSrc = Join-Path $SourceRoot 'MoveTune.ps1'
-                if (Test-Path -LiteralPath $newSrc) { $src = $newSrc }
-            }
-        }
         $dst = Join-Path $InstallRoot $entry
         Copy-FileIfNeeded -Source $src -Destination $dst
+    }
+
+    # One-time cleanup of legacy tune artifacts from older installs.
+    foreach ($legacyEntry in @('RoboTune.ps1', 'RoboTune.json')) {
+        $legacyPath = Join-Path $InstallRoot $legacyEntry
+        if (Test-Path -LiteralPath $legacyPath) {
+            Remove-Item -LiteralPath $legacyPath -Force -ErrorAction SilentlyContinue
+        }
     }
 
     $installerSource = $PSCommandPath
@@ -535,8 +525,7 @@ function Invoke-Uninstall {
 
             $installerKeepPath = Join-Path $InstallPath 'Install.ps1'
             $moveTuneKeepPath = Join-Path $InstallPath 'MoveTune.ps1'
-            $legacyTuneKeepPath = Join-Path $InstallPath 'RoboTune.ps1'
-            $preserveNames = @('Install.ps1', 'MoveTune.ps1', 'RoboTune.ps1')
+            $preserveNames = @('Install.ps1', 'MoveTune.ps1')
             if (-not [string]::IsNullOrWhiteSpace($selfPath) -and (Test-Path -LiteralPath $selfPath)) {
                 $selfNorm = Resolve-NormalizedPath -Path $selfPath
                 $keepNorm = Resolve-NormalizedPath -Path $installerKeepPath
@@ -556,7 +545,7 @@ function Invoke-Uninstall {
                 }
             }
 
-            Write-Step -Text ("Uninstall cleanup complete. Preserved: {0}, {1}, {2}" -f $installerKeepPath, $moveTuneKeepPath, $legacyTuneKeepPath) -Color Gray
+            Write-Step -Text ("Uninstall cleanup complete. Preserved: {0}, {1}" -f $installerKeepPath, $moveTuneKeepPath) -Color Gray
         }
 
         Restart-ExplorerShell
@@ -700,14 +689,8 @@ function Open-InstallDirectory {
 function Launch-MoveTune {
     $scriptPath = Join-Path $InstallPath 'MoveTune.ps1'
     if (-not (Test-Path -LiteralPath $scriptPath)) {
-        $legacyScriptPath = Join-Path $InstallPath 'RoboTune.ps1'
-        if (Test-Path -LiteralPath $legacyScriptPath) {
-            $scriptPath = $legacyScriptPath
-        }
-        else {
-            Write-Host ("MoveTune is not installed yet: {0}" -f $scriptPath) -ForegroundColor Yellow
-            return 1
-        }
+        Write-Host ("MoveTune is not installed yet: {0}" -f $scriptPath) -ForegroundColor Yellow
+        return 1
     }
     Start-Process pwsh.exe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $scriptPath)
     return 0

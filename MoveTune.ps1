@@ -4,17 +4,8 @@ param()
 [Console]::OutputEncoding = [Text.UTF8Encoding]::UTF8
 
 $moveTuneConfigPath = Join-Path $PSScriptRoot "MoveTune.json"
-$legacyTuneConfigPath = Join-Path $PSScriptRoot "RoboTune.json"
 $sharedRoboCopyConfigPath = Join-Path $env:LOCALAPPDATA "RoboCopyContext\\RoboTune.json"
-$configPath = if (Test-Path -LiteralPath $moveTuneConfigPath) {
-    $moveTuneConfigPath
-}
-elseif (Test-Path -LiteralPath $legacyTuneConfigPath) {
-    $legacyTuneConfigPath
-}
-else {
-    $moveTuneConfigPath
-}
+$configPath = $moveTuneConfigPath
 
 function New-DefaultConfig {
     return [ordered]@{
@@ -137,9 +128,6 @@ function Save-ConfigNow {
     param([System.Collections.IDictionary]$Config, [string]$Path)
 
     Save-Config -Config $Config -Path $Path
-    if (-not [string]::IsNullOrWhiteSpace($legacyTuneConfigPath) -and -not $legacyTuneConfigPath.Equals($Path, [System.StringComparison]::OrdinalIgnoreCase)) {
-        Save-Config -Config $Config -Path $legacyTuneConfigPath
-    }
     $sharedRoot = Split-Path -Path $sharedRoboCopyConfigPath -Parent
     if (-not [string]::IsNullOrWhiteSpace($sharedRoot) -and (Test-Path -LiteralPath $sharedRoot)) {
         Save-Config -Config $Config -Path $sharedRoboCopyConfigPath

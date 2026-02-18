@@ -715,17 +715,7 @@ function Save-StagedPaths {
 }
 
 $command = if ($Mode -and $Mode.ToLowerInvariant() -eq "mv") { "mv" } else { "rc" }
-$moveTuneConfigPath = Join-Path $PSScriptRoot "MoveTune.json"
-$legacyTuneConfigPath = Join-Path $PSScriptRoot "RoboTune.json"
-$configPath = if (Test-Path -LiteralPath $moveTuneConfigPath) {
-    $moveTuneConfigPath
-}
-elseif (Test-Path -LiteralPath $legacyTuneConfigPath) {
-    $legacyTuneConfigPath
-}
-else {
-    $moveTuneConfigPath
-}
+$configPath = Join-Path $PSScriptRoot "MoveTune.json"
 $script:StageBackend = Get-StageBackend -ConfigPath $configPath
 $script:StageDebugMode = Get-StageDebugMode -ConfigPath $configPath
 $anchorResolved = Resolve-NormalPath -PathValue $AnchorPath

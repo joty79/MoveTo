@@ -1044,14 +1044,8 @@ function Write-RunLog {
 function Open-MoveTuneWindow {
 	$moveTunePath = Join-Path $PSScriptRoot "MoveTune.ps1"
 	if (-not (Test-Path -LiteralPath $moveTunePath)) {
-		$legacyTunePath = Join-Path $PSScriptRoot "RoboTune.ps1"
-		if (Test-Path -LiteralPath $legacyTunePath) {
-			$moveTunePath = $legacyTunePath
-		}
-		else {
-			Write-Host "MoveTune.ps1 not found: $moveTunePath" -ForegroundColor Yellow
-			return
-		}
+		Write-Host "MoveTune.ps1 not found: $moveTunePath" -ForegroundColor Yellow
+		return
 	}
 
 	$argLine = "-NoProfile -ExecutionPolicy Bypass -File `"$moveTunePath`""
@@ -1781,17 +1775,7 @@ if (-not (Test-Path -LiteralPath $script:LogsDir)) {
 $errorLogPath = Join-Path $script:LogsDir "error_log.txt"
 $script:RunLogPath = Join-Path $script:LogsDir "run_log.txt"
 $script:RobocopyDebugLogPath = Join-Path $script:LogsDir "robocopy_debug.log"
-$moveTuneConfigPath = Join-Path $PSScriptRoot "MoveTune.json"
-$legacyTuneConfigPath = Join-Path $PSScriptRoot "RoboTune.json"
-$tuneConfigPath = if (Test-Path -LiteralPath $moveTuneConfigPath) {
-	$moveTuneConfigPath
-}
-elseif (Test-Path -LiteralPath $legacyTuneConfigPath) {
-	$legacyTuneConfigPath
-}
-else {
-	$moveTuneConfigPath
-}
+$tuneConfigPath = Join-Path $PSScriptRoot "MoveTune.json"
 $script:RoboTuneConfig = Get-TuneConfig -ConfigPath $tuneConfigPath
 $script:StageBackend = Get-StageBackend -Config $script:RoboTuneConfig
 $script:RunSettings = Get-RunSettings -Config $script:RoboTuneConfig
