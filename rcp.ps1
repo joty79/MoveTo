@@ -29,8 +29,10 @@ $script:StageStateDir = Join-Path $PSScriptRoot "state"
 $script:StageFilesDir = Join-Path $script:StageStateDir "staging"
 $script:StageLockPath = Join-Path $script:StageStateDir "stage.lock"
 $script:StageBurstPath = Join-Path $script:StageStateDir "stage.burst"
+$script:StageInProgressPath = Join-Path $script:StageStateDir "stage.inprogress"
 $script:StageBackendDefault = "file"
 $script:StageLockStaleSeconds = 20
+$script:StageInProgressStaleSeconds = 30
 $script:StageResolveTimeoutMs = 4000
 $script:StageResolveMaxTimeoutMs = 12000
 $script:StageBurstStaleSeconds = 6
@@ -154,16 +156,31 @@ function Get-StageWildcardTokenMeta {
 	if ([string]::IsNullOrWhiteSpace($payload)) { return $null }
 
 	$selectedCount = 0
+	$scope = "ALL"
 	$source = $payload
-	$parts = $payload.Split('|', 2)
-	if ($parts.Count -eq 2 -and $parts[0] -match '^\d+$' -and -not [string]::IsNullOrWhiteSpace($parts[1])) {
-		try { $selectedCount = [int]$parts[0] } catch { $selectedCount = 0 }
-		$source = $parts[1]
+	$partsExtended = $payload.Split('|', 3)
+	if (
+		$partsExtended.Count -eq 3 -and
+		($partsExtended[0].Equals("FILES", [System.StringComparison]::OrdinalIgnoreCase) -or $partsExtended[0].Equals("ALL", [System.StringComparison]::OrdinalIgnoreCase)) -and
+		$partsExtended[1] -match '^\d+$' -and
+		-not [string]::IsNullOrWhiteSpace($partsExtended[2])
+	) {
+		$scope = $partsExtended[0].ToUpperInvariant()
+		try { $selectedCount = [int]$partsExtended[1] } catch { $selectedCount = 0 }
+		$source = $partsExtended[2]
+	}
+	else {
+		$partsLegacy = $payload.Split('|', 2)
+		if ($partsLegacy.Count -eq 2 -and $partsLegacy[0] -match '^\d+$' -and -not [string]::IsNullOrWhiteSpace($partsLegacy[1])) {
+			try { $selectedCount = [int]$partsLegacy[0] } catch { $selectedCount = 0 }
+			$source = $partsLegacy[1]
+		}
 	}
 
 	if ([string]::IsNullOrWhiteSpace($source)) { return $null }
 	return [pscustomobject]@{
 		SelectedCount   = $selectedCount
+		Scope           = $scope
 		SourceDirectory = $source
 	}
 }
@@ -174,6 +191,160 @@ function Get-StageWildcardSourceFromToken {
 	$meta = Get-StageWildcardTokenMeta -TokenPath $TokenPath
 	if (-not $meta) { return $null }
 	return [string]$meta.SourceDirectory
+}
+
+function Remove-KeepRootMarkerFast {
+	param([string]$MarkerPath)
+
+	if ([string]::IsNullOrWhiteSpace($MarkerPath)) { return $true }
+
+	# Keep runtime impact near-zero: immediate try first, then tiny retries only on failure.
+	$retryDelaysMs = @(0, 15, 35, 75)
+	foreach ($delayMs in $retryDelaysMs) {
+		if ($delayMs -gt 0) {
+			Start-Sleep -Milliseconds $delayMs
+		}
+
+		try {
+			if (-not [System.IO.File]::Exists($MarkerPath)) {
+				return $true
+			}
+			[System.IO.File]::Delete($MarkerPath)
+			if (-not [System.IO.File]::Exists($MarkerPath)) {
+				return $true
+			}
+		}
+		catch { }
+	}
+
+	return (-not [System.IO.File]::Exists($MarkerPath))
+}
+
+function Try-DeleteFileTinyRetry {
+	param([string]$Path)
+
+	if ([string]::IsNullOrWhiteSpace($Path)) { return $true }
+
+	$retryDelaysMs = @(0, 20, 60, 120)
+	foreach ($delayMs in $retryDelaysMs) {
+		if ($delayMs -gt 0) {
+			Start-Sleep -Milliseconds $delayMs
+		}
+
+		try {
+			if (-not [System.IO.File]::Exists($Path)) {
+				return $true
+			}
+
+			try {
+				[System.IO.File]::SetAttributes($Path, [System.IO.FileAttributes]::Normal)
+			}
+			catch { }
+
+			[System.IO.File]::Delete($Path)
+			if (-not [System.IO.File]::Exists($Path)) {
+				return $true
+			}
+		}
+		catch { }
+	}
+
+	return (-not [System.IO.File]::Exists($Path))
+}
+
+function Resolve-TokenMoveRootLeftovers {
+	param(
+		[string]$SourceDirectory,
+		[string]$DestinationDirectory
+	)
+
+	$stats = [pscustomobject]@{
+		Checked  = 0
+		Eligible = 0
+		Cleaned  = 0
+		Failed   = 0
+		Skipped  = 0
+	}
+
+	if ([string]::IsNullOrWhiteSpace($SourceDirectory) -or [string]::IsNullOrWhiteSpace($DestinationDirectory)) {
+		return $stats
+	}
+	if (-not [System.IO.Directory]::Exists($SourceDirectory)) {
+		return $stats
+	}
+	if (-not [System.IO.Directory]::Exists($DestinationDirectory)) {
+		return $stats
+	}
+
+	$failedSamples = New-Object System.Collections.Generic.List[string]
+	$sourceFiles = @()
+	try {
+		$sourceFiles = @([System.IO.Directory]::EnumerateFiles($SourceDirectory, "*", [System.IO.SearchOption]::TopDirectoryOnly))
+	}
+	catch {
+		return $stats
+	}
+
+	foreach ($sourcePath in $sourceFiles) {
+		$name = [System.IO.Path]::GetFileName($sourcePath)
+		if ([string]::IsNullOrWhiteSpace($name)) { continue }
+
+		if ($name.StartsWith("__rcwm_keep_root_", [System.StringComparison]::OrdinalIgnoreCase) -and
+			$name.EndsWith(".tmp", [System.StringComparison]::OrdinalIgnoreCase)) {
+			continue
+		}
+
+		$stats.Checked++
+		$destinationPath = Join-Path $DestinationDirectory $name
+		if (-not [System.IO.File]::Exists($destinationPath)) {
+			$stats.Skipped++
+			continue
+		}
+
+		$sourceInfo = $null
+		$destinationInfo = $null
+		try {
+			$sourceInfo = Get-Item -LiteralPath $sourcePath -Force -ErrorAction Stop
+			$destinationInfo = Get-Item -LiteralPath $destinationPath -Force -ErrorAction Stop
+		}
+		catch {
+			$stats.Skipped++
+			continue
+		}
+
+		if ($sourceInfo.PSIsContainer -or $destinationInfo.PSIsContainer) {
+			$stats.Skipped++
+			continue
+		}
+
+		$sameLength = ([int64]$sourceInfo.Length -eq [int64]$destinationInfo.Length)
+		$sameWriteUtc = ($sourceInfo.LastWriteTimeUtc -eq $destinationInfo.LastWriteTimeUtc)
+		if (-not ($sameLength -and $sameWriteUtc)) {
+			$stats.Skipped++
+			continue
+		}
+
+		$stats.Eligible++
+		if (Try-DeleteFileTinyRetry -Path $sourcePath) {
+			$stats.Cleaned++
+		}
+		else {
+			$stats.Failed++
+			if ($failedSamples.Count -lt 3) {
+				[void]$failedSamples.Add($sourcePath)
+			}
+		}
+	}
+
+	if ($script:RunSettings.DebugMode) {
+		Write-RunLog ("DEBUG | SelectAll token root-cleanup | Source='{0}' | Dest='{1}' | Checked={2} | Eligible={3} | Cleaned={4} | Failed={5} | Skipped={6}" -f $SourceDirectory, $DestinationDirectory, $stats.Checked, $stats.Eligible, $stats.Cleaned, $stats.Failed, $stats.Skipped)
+	}
+	if ($stats.Failed -gt 0) {
+		$preview = if ($failedSamples.Count -gt 0) { [string]::Join(" | ", $failedSamples.ToArray()) } else { "" }
+		Write-RunLog ("SelectAll token root-cleanup warning | Source='{0}' | Failed={1} | Samples='{2}'" -f $SourceDirectory, $stats.Failed, $preview)
+	}
+
+	return $stats
 }
 
 function Remove-StageBurstMarker {
@@ -208,6 +379,22 @@ function Test-StageBurstActive {
 		$ageSeconds = ((Get-Date) - $burstItem.LastWriteTime).TotalSeconds
 		if ($ageSeconds -gt $script:StageBurstStaleSeconds) {
 			Remove-Item -LiteralPath $script:StageBurstPath -Force -ErrorAction SilentlyContinue
+			return $false
+		}
+		return $true
+	}
+	catch {
+		return $false
+	}
+}
+
+function Test-StageInProgressActive {
+	try {
+		if (-not (Test-Path -LiteralPath $script:StageInProgressPath)) { return $false }
+		$markerItem = Get-Item -LiteralPath $script:StageInProgressPath -ErrorAction Stop
+		$ageSeconds = ((Get-Date) - $markerItem.LastWriteTime).TotalSeconds
+		if ($ageSeconds -gt $script:StageInProgressStaleSeconds) {
+			Remove-Item -LiteralPath $script:StageInProgressPath -Force -ErrorAction SilentlyContinue
 			return $false
 		}
 		return $true
@@ -501,15 +688,16 @@ function Resolve-StagedPayload {
 
 		$lockActive = Test-StageLockActive
 		$burstActive = Test-StageBurstActive
+		$inProgressActive = Test-StageInProgressActive
 		$elapsed = $timer.ElapsedMilliseconds
 
 		if ($elapsed -ge $TimeoutMs) {
-			if (-not $extended -and ($lockActive -or $burstActive)) {
+			if (-not $extended -and ($lockActive -or $burstActive -or $inProgressActive)) {
 				$extended = $true
-				Write-RunLog ("Stage resolve extending wait | Requested={0} | WaitMs={1} | LockActive={2} | BurstActive={3}" -f $requested, $elapsed, $lockActive, $burstActive)
+				Write-RunLog ("Stage resolve extending wait | Requested={0} | WaitMs={1} | LockActive={2} | BurstActive={3} | InProgress={4}" -f $requested, $elapsed, $lockActive, $burstActive, $inProgressActive)
 			}
 
-			if ($elapsed -ge $maxTimeout -or (-not $lockActive -and -not $burstActive)) {
+			if ($elapsed -ge $maxTimeout -or (-not $lockActive -and -not $burstActive -and -not $inProgressActive)) {
 				if ($snapshots.Count -gt 0) {
 					$latest = $snapshots |
 						Sort-Object @{
@@ -517,10 +705,10 @@ function Resolve-StagedPayload {
 							Descending = $true
 						} |
 						Select-Object -First 1
-					Write-RunLog ("Stage resolve timeout | Requested={0} | WaitMs={1} | Command={2} | Ready={3} | Expected={4} | Actual={5} | Session={6} | LockActive={7} | BurstActive={8}" -f $requested, $elapsed, $latest.CommandName, $latest.ReadyFlag, $latest.ExpectedCount, $latest.ActualCount, $latest.SessionId, $lockActive, $burstActive)
+					Write-RunLog ("Stage resolve timeout | Requested={0} | WaitMs={1} | Command={2} | Ready={3} | Expected={4} | Actual={5} | Session={6} | LockActive={7} | BurstActive={8} | InProgress={9}" -f $requested, $elapsed, $latest.CommandName, $latest.ReadyFlag, $latest.ExpectedCount, $latest.ActualCount, $latest.SessionId, $lockActive, $burstActive, $inProgressActive)
 				}
 				else {
-					Write-RunLog ("Stage resolve timeout | Requested={0} | Backend={1} | WaitMs={2} | No stage snapshot found | LockActive={3} | BurstActive={4}" -f $requested, $Backend, $elapsed, $lockActive, $burstActive)
+					Write-RunLog ("Stage resolve timeout | Requested={0} | Backend={1} | WaitMs={2} | No stage snapshot found | LockActive={3} | BurstActive={4} | InProgress={5}" -f $requested, $Backend, $elapsed, $lockActive, $burstActive, $inProgressActive)
 				}
 				return $null
 			}
@@ -1639,6 +1827,8 @@ function Invoke-StagedPathCollection {
 		$tokenMeta = Get-StageWildcardTokenMeta -TokenPath $tokenPath
 		$sourceDirectory = if ($tokenMeta) { [string]$tokenMeta.SourceDirectory } else { $null }
 		$tokenSelectedCount = if ($tokenMeta) { [int]$tokenMeta.SelectedCount } else { 0 }
+		$tokenScope = if ($tokenMeta -and $tokenMeta.PSObject.Properties.Name -contains 'Scope' -and -not [string]::IsNullOrWhiteSpace([string]$tokenMeta.Scope)) { [string]$tokenMeta.Scope } else { "ALL" }
+		$tokenFilesOnly = $tokenScope.Equals("FILES", [System.StringComparison]::OrdinalIgnoreCase)
 		if ([string]::IsNullOrWhiteSpace($sourceDirectory) -or -not [System.IO.Directory]::Exists($sourceDirectory)) {
 			Write-Host "Source directory from staged token does not exist: $sourceDirectory" -ForegroundColor Yellow
 			Write-RunLog ("SelectAll token rejected | Reason=MissingSource | Token='{0}'" -f $tokenPath)
@@ -1656,10 +1846,15 @@ function Invoke-StagedPathCollection {
 			}
 		}
 		if ($IsMove) {
-			if ($tokenSet.Add('/MOVE')) {
+			if ($tokenFilesOnly) {
+				if ($tokenSet.Add('/MOV')) {
+					[void]$filteredTokens.Add('/MOV')
+				}
+			}
+			elseif ($tokenSet.Add('/MOVE')) {
 				[void]$filteredTokens.Add('/MOVE')
 			}
-			# For tokenized select-all moves, include /IS so same-name/same-content files are processed
+			# For tokenized moves, include /IS so same-name/same-content files are processed
 			# and removed from source as part of move semantics.
 			if ($tokenSet.Add('/IS')) {
 				[void]$filteredTokens.Add('/IS')
@@ -1667,7 +1862,7 @@ function Invoke-StagedPathCollection {
 		}
 
 		$rootKeepFilePath = $null
-		if ($IsMove) {
+		if ($IsMove -and -not $tokenFilesOnly) {
 			try {
 				$rootKeepFileName = ("__rcwm_keep_root_{0}.tmp" -f ([guid]::NewGuid().ToString("N")))
 				$rootKeepFilePath = Join-Path $sourceDirectory $rootKeepFileName
@@ -1687,20 +1882,29 @@ function Invoke-StagedPathCollection {
 		$effectiveModeTokens = [string[]]$filteredTokens.ToArray()
 		$effectiveModeText = [string]::Join(' ', $effectiveModeTokens)
 
-		Write-RunLog ("SelectAll token transfer | Source='{0}' | Dest='{1}' | ModeFlag='{2}' | IsMove={3} | MergeMode={4} | SelectedCount={5}" -f $sourceDirectory, $PasteIntoDirectory, $effectiveModeText, $IsMove, [bool]$MergeMode, $tokenSelectedCount)
+		Write-RunLog ("SelectAll token transfer | Source='{0}' | Dest='{1}' | ModeFlag='{2}' | IsMove={3} | MergeMode={4} | SelectedCount={5} | Scope={6}" -f $sourceDirectory, $PasteIntoDirectory, $effectiveModeText, $IsMove, [bool]$MergeMode, $tokenSelectedCount, $tokenScope)
 		$tokenResult = $null
 		try {
-			$tokenResult = Invoke-RobocopyTransfer -SourcePath $sourceDirectory -DestinationPath $PasteIntoDirectory -ModeFlag $effectiveModeTokens -MergeMode:$MergeMode
+			if ($tokenFilesOnly) {
+				$tokenResult = Invoke-RobocopyTransfer -SourcePath $sourceDirectory -DestinationPath $PasteIntoDirectory -ModeFlag $effectiveModeTokens -MergeMode:$MergeMode -SourceIsFile -FileFilters @("*")
+			}
+			else {
+				$tokenResult = Invoke-RobocopyTransfer -SourcePath $sourceDirectory -DestinationPath $PasteIntoDirectory -ModeFlag $effectiveModeTokens -MergeMode:$MergeMode
+			}
 		}
 		finally {
-			if ($rootKeepFilePath -and [System.IO.File]::Exists($rootKeepFilePath)) {
-				try {
-					Remove-Item -LiteralPath $rootKeepFilePath -Force -ErrorAction Stop
+			if ($rootKeepFilePath) {
+				$markerRemoved = Remove-KeepRootMarkerFast -MarkerPath $rootKeepFilePath
+				if (-not $markerRemoved) {
+					Write-RunLog ("SelectAll token move guard warning | Marker still exists after retries '{0}'" -f $rootKeepFilePath)
 				}
-				catch {
-					Write-RunLog ("SelectAll token move guard warning | Failed to remove keep-root marker '{0}' | {1}" -f $rootKeepFilePath, $_.Exception.Message)
+				elseif ($script:RunSettings.DebugMode) {
+					Write-RunLog ("DEBUG | SelectAll token move guard cleanup | Marker removed '{0}'" -f $rootKeepFilePath)
 				}
 			}
+		}
+		if ($IsMove -and $tokenResult -and $tokenResult.Succeeded) {
+			[void](Resolve-TokenMoveRootLeftovers -SourceDirectory $sourceDirectory -DestinationDirectory $PasteIntoDirectory)
 		}
 		if ($tokenResult) {
 			$results += $tokenResult
@@ -1869,12 +2073,15 @@ try {
 		$array = @($resolvedSnapshot.Paths)
 		$activeSnapshot = $resolvedSnapshot
 	}
-	else {
+	elseif ($resolvedSnapshot) {
 		$fallbackSnapshot = Get-StagedSnapshot -CommandName $command -Backend $script:StageBackend
 		if ($fallbackSnapshot -and $fallbackSnapshot.IsReady) {
 			$array = @($fallbackSnapshot.Paths)
 			$activeSnapshot = $fallbackSnapshot
 		}
+	}
+	else {
+		Write-RunLog ("Fallback snapshot skipped for safety | Requested={0} | Command={1} | Reason='resolved-null'" -f $requestedCommand, $command)
 	}
 	$arrayLength = @($array).Count
 	if ($arrayLength -eq 0) {

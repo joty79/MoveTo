@@ -53,6 +53,60 @@ function Write-Step {
     Write-Host ('[>] {0}' -f $Text) -ForegroundColor $Color
 }
 
+function Test-IsProcessElevated {
+    try {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        if (-not $identity) { return $false }
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Invoke-SelfElevatedUninstall {
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [Parameter(Mandatory)][string]$InstallSourceRoot,
+        [switch]$NoRestartExplorer
+    )
+
+    $selfPath = $PSCommandPath
+    if ([string]::IsNullOrWhiteSpace($selfPath) -and $MyInvocation.MyCommand) {
+        $selfPath = $MyInvocation.MyCommand.Definition
+    }
+    if ([string]::IsNullOrWhiteSpace($selfPath) -or -not (Test-Path -LiteralPath $selfPath)) {
+        throw 'Cannot locate installer script path for elevation.'
+    }
+
+    $pwshCmd = Get-Command -Name 'pwsh.exe' -ErrorAction SilentlyContinue
+    if (-not $pwshCmd) {
+        throw 'pwsh.exe is required for elevated uninstall.'
+    }
+
+    $argList = @(
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', ('"{0}"' -f $selfPath),
+        '-Action', 'Uninstall',
+        '-InstallPath', ('"{0}"' -f $InstallRoot),
+        '-SourcePath', ('"{0}"' -f $InstallSourceRoot),
+        '-PackageSource', 'Local',
+        '-Force'
+    )
+    if ($NoRestartExplorer) {
+        $argList += '-NoExplorerRestart'
+    }
+
+    $argumentString = [string]::Join(' ', $argList)
+    $process = Start-Process -FilePath $pwshCmd.Source -ArgumentList $argumentString -Verb RunAs -Wait -PassThru
+    if ($null -eq $process) {
+        throw 'Failed to start elevated uninstall process.'
+    }
+    return [int]$process.ExitCode
+}
+
 function Ensure-Directory {
     param([Parameter(Mandatory)][string]$Path)
     if (-not (Test-Path -LiteralPath $Path)) {
@@ -726,6 +780,10 @@ function Invoke-Main {
         }
         'Uninstall' {
             if (-not (Confirm-Action -Prompt "Uninstall MoveTo Context Menu from '$InstallPath'?")) { Write-Host 'Cancelled.' -ForegroundColor Yellow; return 0 }
+            if (-not (Test-IsProcessElevated)) {
+                Write-Step -Text 'Uninstall requires elevation for full registry cleanup. Requesting admin rights...' -Color Yellow
+                return (Invoke-SelfElevatedUninstall -InstallRoot $InstallPath -InstallSourceRoot $SourcePath -NoRestartExplorer:$NoExplorerRestart)
+            }
             return (Invoke-Uninstall)
         }
         default {

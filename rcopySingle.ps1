@@ -23,6 +23,7 @@ $script:SelectAllTokenThreshold = 1000
 $script:StageMutexName = "Global\MoveTo_RoboCopy_Stage"
 $script:StageStateDir = Join-Path $PSScriptRoot "state"
 $script:StageFilesDir = Join-Path $script:StageStateDir "staging"
+$script:StageInProgressPath = Join-Path $script:StageStateDir "stage.inprogress"
 $script:StageBackendDefault = "file"
 $script:StageDebugMode = $false
 
@@ -86,10 +87,19 @@ function Test-IsSelectAllToken {
 function New-SelectAllToken {
     param(
         [string]$SourceDirectory,
-        [int]$SelectedCount = 0
+        [int]$SelectedCount = 0,
+        [ValidateSet("ALL", "FILES")]
+        [string]$Scope = "ALL"
     )
 
     if ([string]::IsNullOrWhiteSpace($SourceDirectory)) { return $null }
+    if ($Scope -eq "FILES") {
+        if ($SelectedCount -gt 0) {
+            return ("{0}FILES|{1}|{2}" -f $script:SelectAllTokenPrefix, $SelectedCount, $SourceDirectory)
+        }
+        return ("{0}FILES|0|{1}" -f $script:SelectAllTokenPrefix, $SourceDirectory)
+    }
+
     if ($SelectedCount -gt 0) {
         return ("{0}{1}|{2}" -f $script:SelectAllTokenPrefix, $SelectedCount, $SourceDirectory)
     }
@@ -104,16 +114,31 @@ function Get-SelectAllTokenPayload {
     if ([string]::IsNullOrWhiteSpace($payload)) { return $null }
 
     $selectedCount = 0
+    $scope = "ALL"
     $sourceDirectory = $payload
-    $parts = $payload.Split('|', 2)
-    if ($parts.Count -eq 2 -and $parts[0] -match '^\d+$' -and -not [string]::IsNullOrWhiteSpace($parts[1])) {
-        try { $selectedCount = [int]$parts[0] } catch { $selectedCount = 0 }
-        $sourceDirectory = $parts[1]
+    $partsExtended = $payload.Split('|', 3)
+    if (
+        $partsExtended.Count -eq 3 -and
+        ($partsExtended[0].Equals("FILES", [System.StringComparison]::OrdinalIgnoreCase) -or $partsExtended[0].Equals("ALL", [System.StringComparison]::OrdinalIgnoreCase)) -and
+        $partsExtended[1] -match '^\d+$' -and
+        -not [string]::IsNullOrWhiteSpace($partsExtended[2])
+    ) {
+        $scope = $partsExtended[0].ToUpperInvariant()
+        try { $selectedCount = [int]$partsExtended[1] } catch { $selectedCount = 0 }
+        $sourceDirectory = $partsExtended[2]
+    }
+    else {
+        $partsLegacy = $payload.Split('|', 2)
+        if ($partsLegacy.Count -eq 2 -and $partsLegacy[0] -match '^\d+$' -and -not [string]::IsNullOrWhiteSpace($partsLegacy[1])) {
+            try { $selectedCount = [int]$partsLegacy[0] } catch { $selectedCount = 0 }
+            $sourceDirectory = $partsLegacy[1]
+        }
     }
 
     if ([string]::IsNullOrWhiteSpace($sourceDirectory)) { return $null }
     return [pscustomobject]@{
         SelectedCount   = $selectedCount
+        Scope           = $scope
         SourceDirectory = $sourceDirectory
     }
 }
@@ -125,6 +150,43 @@ function Ensure-StageStateDirectories {
         }
         if (-not (Test-Path -LiteralPath $script:StageFilesDir)) {
             New-Item -ItemType Directory -Path $script:StageFilesDir -Force | Out-Null
+        }
+    }
+    catch { }
+}
+
+function Set-StageInProgressMarker {
+    param(
+        [ValidateSet("rc", "mv")]
+        [string]$CommandName,
+        [string]$AnchorPath
+    )
+
+    $tempPath = $null
+    try {
+        Ensure-StageStateDirectories
+        $tempPath = "{0}.{1}.tmp" -f $script:StageInProgressPath, ([Guid]::NewGuid().ToString("N"))
+        $stampUtc = (Get-Date).ToUniversalTime().ToString("o")
+        $safeAnchor = if ([string]::IsNullOrWhiteSpace($AnchorPath)) { "" } else { $AnchorPath.Replace("`r", "").Replace("`n", "") }
+        $payload = "UTC={0}|MODE={1}|ANCHOR={2}" -f $stampUtc, $CommandName, $safeAnchor
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($tempPath, $payload, $utf8NoBom)
+        Move-Item -LiteralPath $tempPath -Destination $script:StageInProgressPath -Force
+    }
+    catch {
+        try {
+            if (-not [string]::IsNullOrWhiteSpace($tempPath) -and (Test-Path -LiteralPath $tempPath)) {
+                Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+            }
+        }
+        catch { }
+    }
+}
+
+function Clear-StageInProgressMarker {
+    try {
+        if (Test-Path -LiteralPath $script:StageInProgressPath) {
+            Remove-Item -LiteralPath $script:StageInProgressPath -Force -ErrorAction SilentlyContinue
         }
     }
     catch { }
@@ -440,15 +502,42 @@ function Get-ExplorerSelectionFromParent {
         $selectedCountMs = [int][Math]::Round($selectedCountTimer.Elapsed.TotalMilliseconds)
 
         $selectAllHint = ($folderItemCount -gt 0 -and $selectedCount -eq $folderItemCount)
-        Write-StageDebugLog ("WindowScan | Scanned={0} | ParentMatches={1} | MatchFoundMs={2} | COM_EnumMs={3} | RawCount={4} | FolderCount={5} | FolderCountMs={6} | SelectedCountMs={7} | SelectAllHint={8} | AnchorHit={9} | CountOnlyMode={10}" -f $windowsScanned, $parentMatches, $scanMs, 0, $selectedCount, $folderItemCount, $folderCountMs, $selectedCountMs, $selectAllHint, "n/a", $true)
+        $allTopLevelFilesHint = $false
+        $allTopLevelFilesCount = -1
+        $topLevelDirectoryCount = 0
+        $allTopFilesHintMs = -1
+        $sourcePath = Resolve-NormalPath -PathValue $singleMatch.WindowFolderPath
+        if (-not $sourcePath) { $sourcePath = $singleMatch.WindowFolderPath }
 
-        if ($selectAllHint -and $selectedCount -ge $script:SelectAllTokenThreshold) {
+        if ($folderItemCount -gt 0 -and $selectedCount -gt 0 -and -not [string]::IsNullOrWhiteSpace($sourcePath) -and [System.IO.Directory]::Exists($sourcePath)) {
+            $allTopFilesHintTimer = [System.Diagnostics.Stopwatch]::StartNew()
+            try {
+                foreach ($ignoredDir in [System.IO.Directory]::EnumerateDirectories($sourcePath, "*", [System.IO.SearchOption]::TopDirectoryOnly)) {
+                    $topLevelDirectoryCount++
+                }
+                $allTopLevelFilesCount = $folderItemCount - $topLevelDirectoryCount
+                $allTopLevelFilesHint = ($allTopLevelFilesCount -gt 0 -and $selectedCount -eq $allTopLevelFilesCount)
+            }
+            catch {
+                $allTopLevelFilesHint = $false
+                $allTopLevelFilesCount = -1
+                $topLevelDirectoryCount = -1
+            }
+            $allTopFilesHintTimer.Stop()
+            $allTopFilesHintMs = [int][Math]::Round($allTopFilesHintTimer.Elapsed.TotalMilliseconds)
+        }
+
+        Write-StageDebugLog ("WindowScan | Scanned={0} | ParentMatches={1} | MatchFoundMs={2} | COM_EnumMs={3} | RawCount={4} | FolderCount={5} | FolderCountMs={6} | SelectedCountMs={7} | SelectAllHint={8} | AllTopLevelFilesHint={9} | AllTopLevelFilesCount={10} | TopLevelDirectoryCount={11} | AllTopFilesHintMs={12} | AnchorHit={13} | CountOnlyMode={14}" -f $windowsScanned, $parentMatches, $scanMs, 0, $selectedCount, $folderItemCount, $folderCountMs, $selectedCountMs, $selectAllHint, $allTopLevelFilesHint, $allTopLevelFilesCount, $topLevelDirectoryCount, $allTopFilesHintMs, "n/a", $true)
+
+        if (($selectAllHint -or $allTopLevelFilesHint) -and $selectedCount -ge $script:SelectAllTokenThreshold) {
             $sourcePath = Resolve-NormalPath -PathValue $singleMatch.WindowFolderPath
             if (-not $sourcePath) { $sourcePath = $singleMatch.WindowFolderPath }
-                $token = New-SelectAllToken -SourceDirectory $sourcePath -SelectedCount $selectedCount
+                $tokenScope = if ($allTopLevelFilesHint) { "FILES" } else { "ALL" }
+                $token = New-SelectAllToken -SourceDirectory $sourcePath -SelectedCount $selectedCount -Scope $tokenScope
                 if ($token) {
                     $scanTimer.Stop()
-                    Write-StageDebugLog ("FastPath | SelectAllToken | Count={0} | Threshold={1} | Source='{2}'" -f $selectedCount, $script:SelectAllTokenThreshold, $sourcePath)
+                    $tokenReason = if ($selectAllHint) { "SelectAllToken" } else { "AllTopLevelFilesToken" }
+                    Write-StageDebugLog ("FastPath | {0} | Scope={1} | Count={2} | Threshold={3} | Source='{4}'" -f $tokenReason, $tokenScope, $selectedCount, $script:SelectAllTokenThreshold, $sourcePath)
                     Write-StageDebugLog ("WindowScanSummary | Scanned={0} | ParentMatches={1} | SelectedItemsRead={2} | TotalMs={3} | Tokenized={4}" -f $windowsScanned, $parentMatches, 0, [int][Math]::Round($scanTimer.Elapsed.TotalMilliseconds), $true)
                     return @($token)
             }
@@ -733,6 +822,7 @@ try {
         Write-StageLog ("WARN | mode={0} | mutex timeout for anchor='{1}'" -f $command, $anchorResolved)
         exit 1
     }
+    Set-StageInProgressMarker -CommandName $command -AnchorPath $anchorResolved
 
     $parentPath = Get-AnchorParentPath -PathValue $anchorResolved
     $selectionTimer = [System.Diagnostics.Stopwatch]::StartNew()
@@ -770,6 +860,7 @@ try {
     exit 0
 }
 finally {
+    Clear-StageInProgressMarker
     if ($hasLock) {
         $mutex.ReleaseMutex() | Out-Null
     }

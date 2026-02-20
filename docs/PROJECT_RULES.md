@@ -16,6 +16,24 @@
 - Prefer side-by-side experiments (for example, RoboCopy-based flow) instead of replacing the native path directly.
 
 ## Decision Log
+### 2026-02-20 - MoveTo uninstall self-elevation for πλήρες registry cleanup
+- Problem: Το `Uninstall` μπορούσε να αφήνει context-menu keys (ειδικά HKCR merged-view) όταν έτρεχε χωρίς admin rights.
+- Root cause: Το uninstall flow δεν έκανε self-elevate πριν το cleanup.
+- Guardrail/rule: Στο `Install.ps1`, το action `Uninstall` πρέπει να ελέγχει elevation και αν δεν είναι elevated να κάνει relaunch με `-Verb RunAs` και ίδια args.
+- Files affected: `Install.ps1`.
+- Validation/tests run: PowerShell parser validation OK (`Parser::ParseFile`).
+
+### 2026-02-20 - Backport robocopy token fixes στο MoveTo engine (FILES scope + leftover cleanup)
+- Problem: Σε tokenized select-all/file-heavy flows μπορούσαν να μεταφερθούν μη επιλεγμένοι φάκελοι ή να μείνουν σπάνια single-file leftovers μετά από move.
+- Root cause: Έλειπε FILES-scope token semantics στο stage/paste path και έλειπε post-move root leftover cleanup με resilient marker removal.
+- Guardrail/rule:
+  - `rcopySingle.ps1`: όταν επιλέγονται όλα τα top-level files (όχι φάκελοι), γράφουμε token με `Scope=FILES` και stage in-progress marker.
+  - `rcp.ps1`: σε `Scope=FILES` χρησιμοποιούμε file-only token transfer (`/MOV` + file filters) και όχι directory move semantics.
+  - `rcp.ps1`: μετά από επιτυχημένο tokenized move, τρέχει root leftover cleanup και marker cleanup με tiny retries.
+  - `rcp.ps1`: αν stage resolution γυρίσει `null`, δεν γίνεται unsafe fallback snapshot reuse.
+- Files affected: `rcopySingle.ps1`, `rcp.ps1`.
+- Validation/tests run: PowerShell parser validation OK (`Parser::ParseFile`) και στα δύο scripts.
+
 ### 2026-02-15 - MoveTo parity sync: single-anchor stage guard + same-volume native move safety
 - Problem: (1) Σε single-item stage μπορούσε να αποθηκευτεί path διαφορετικό από το clicked anchor. (2) Cut στο ίδιο volume δεν είχε native fast path/safety guards.
 - Root cause: (1) COM selection fallback μπορούσε να επιστρέψει λάθος single path. (2) Η flow βασιζόταν πάντα σε robocopy+delete χωρίς explicit same-volume/native-move guardrails.
