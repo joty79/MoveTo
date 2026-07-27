@@ -224,6 +224,13 @@
 - Files affected: `NuclearDelete/*` (all tracked files removed).
 - Validation/tests: `git rm -r NuclearDelete` completed successfully; pending final commit/push.
 
+### 2026-07-28 - Controlled Robocopy engine safety backport
+- Problem: The clean MoveTo branch had fallen behind committed Robocopy engine safety fixes, while the historical byte-identical rule conflicted with the newer MoveTune-only runtime policy.
+- Root cause: Shared staging fixes landed in the standalone Robocopy repo after MoveTo adopted project-specific `MoveTune.ps1` / `MoveTune.json` names and retained a safer initialized temporary-path cleanup guard.
+- Guardrail/rule: Backport validated shared behavior deliberately; preserve the MoveTune-only contract and documented MoveTo-safe deviations. Engine parity means safety/behavior parity, not blind byte identity.
+- Files affected: `rcp.ps1`, `rcopySingle.ps1`, `.gitattributes`, `tests/EngineParity.Tests.ps1`, `README.md`, `CHANGELOG.md`, `PROJECT_RULES.md`.
+- Validation/tests: PowerShell parser validation, engine regression check, PSScriptAnalyzer error scan, intentional-difference review against the clean Robocopy sibling, `git diff --check`, and `git ls-files --eol`.
+
 ## Entry Template
 ### YYYY-MM-DD - Short decision title
 - Problem:

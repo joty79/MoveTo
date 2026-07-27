@@ -8,6 +8,7 @@
 - Add/remove destinations from the same submenu.
 - Staged multi-select pipeline (files + folders).
 - Select-all fast path for very large selections.
+- Fresh-snapshot and late-callback guards prevent stale Explorer state from replacing a valid multi-item stage.
 - Robust `cut -> paste` behavior on duplicate targets (`/IS`) without deleting the source root folder.
 
 ## Installation
@@ -37,9 +38,10 @@
    - Starts stage + paste wrappers.
 2. `RoboCopy_Silent.vbs` + `rcopySingle.ps1`:
    - Captures actual Explorer selection.
-   - Writes staged snapshot (`state\staging\*.stage.json`).
+   - Writes staged snapshot (`state\staging\*.stage.json`) while preserving a recent valid multi-item stage from late empty/mismatched callbacks.
 3. `RoboPaste_Admin.vbs` + `rcp.ps1`:
    - Runs elevated paste in Windows Terminal.
+   - Waits for a fresh snapshot when staging is still active.
    - Applies adaptive `/MT`.
    - Handles tokenized select-all move path while preserving source root folder identity.
 

@@ -198,7 +198,7 @@ function Remove-KeepRootMarkerFast {
 
 	if ([string]::IsNullOrWhiteSpace($MarkerPath)) { return $true }
 
-	# Keep runtime impact near-zero: immediate try first, then tiny retries only on failure.
+	# Keep runtime impact near-zero: immediate try first, then a few tiny retries only on failure.
 	$retryDelaysMs = @(0, 15, 35, 75)
 	foreach ($delayMs in $retryDelaysMs) {
 		if ($delayMs -gt 0) {
@@ -287,7 +287,9 @@ function Resolve-TokenMoveRootLeftovers {
 
 	foreach ($sourcePath in $sourceFiles) {
 		$name = [System.IO.Path]::GetFileName($sourcePath)
-		if ([string]::IsNullOrWhiteSpace($name)) { continue }
+		if ([string]::IsNullOrWhiteSpace($name)) {
+			continue
+		}
 
 		if ($name.StartsWith("__rcwm_keep_root_", [System.StringComparison]::OrdinalIgnoreCase) -and
 			$name.EndsWith(".tmp", [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -649,6 +651,27 @@ function Get-StagedSnapshot {
 	return (Get-StagedSnapshotFromFile -CommandName $CommandName)
 }
 
+function Test-IsSnapshotFreshForResolve {
+	param(
+		[object]$Snapshot,
+		[datetime]$ResolveStartUtc
+	)
+
+	if (-not $Snapshot) { return $false }
+	$snapshotStageUtc = $null
+	if ($Snapshot.PSObject.Properties.Name -contains "LastStageUtc") {
+		$snapshotStageUtc = $Snapshot.LastStageUtc
+	}
+	if ($null -eq $snapshotStageUtc) { return $false }
+
+	try {
+		return ($snapshotStageUtc.ToUniversalTime() -ge $ResolveStartUtc)
+	}
+	catch {
+		return $false
+	}
+}
+
 function Resolve-StagedPayload {
 	param(
 		[string]$RequestedCommand = "auto",
@@ -660,7 +683,10 @@ function Resolve-StagedPayload {
 	$requested = if ([string]::IsNullOrWhiteSpace($RequestedCommand)) { "auto" } else { $RequestedCommand.ToLowerInvariant() }
 	$commands = if ($requested -in @("rc", "mv")) { @($requested) } else { @("mv", "rc") }
 	$timer = [System.Diagnostics.Stopwatch]::StartNew()
+	$resolveStartUtc = (Get-Date).ToUniversalTime()
 	$extended = $false
+	$observedActiveMarker = $false
+	$staleReadyWaitLogged = $false
 	$maxTimeout = [Math]::Max($TimeoutMs, $script:StageResolveMaxTimeoutMs)
 
 	while ($true) {
@@ -670,6 +696,14 @@ function Resolve-StagedPayload {
 			if ($snapshot) {
 				$snapshots += $snapshot
 			}
+		}
+
+		$lockActive = Test-StageLockActive
+		$burstActive = Test-StageBurstActive
+		$inProgressActive = Test-StageInProgressActive
+		$markerActive = ($lockActive -or $burstActive -or $inProgressActive)
+		if ($markerActive) {
+			$observedActiveMarker = $true
 		}
 
 		$ready = @($snapshots | Where-Object { $_.IsReady })
@@ -683,21 +717,30 @@ function Resolve-StagedPayload {
 					Descending = $true
 				} |
 				Select-Object -First 1
-			return $selected
+
+			if (-not $observedActiveMarker) {
+				return $selected
+			}
+
+			if (Test-IsSnapshotFreshForResolve -Snapshot $selected -ResolveStartUtc $resolveStartUtc) {
+				return $selected
+			}
+
+			if (-not $staleReadyWaitLogged) {
+				Write-RunLog ("Stage resolve waiting for fresh snapshot | Requested={0} | Session={1} | LastStageUtc={2} | LockActive={3} | BurstActive={4} | InProgressActive={5}" -f $requested, $selected.SessionId, $selected.LastStageUtc, $lockActive, $burstActive, $inProgressActive)
+				$staleReadyWaitLogged = $true
+			}
 		}
 
-		$lockActive = Test-StageLockActive
-		$burstActive = Test-StageBurstActive
-		$inProgressActive = Test-StageInProgressActive
 		$elapsed = $timer.ElapsedMilliseconds
 
 		if ($elapsed -ge $TimeoutMs) {
-			if (-not $extended -and ($lockActive -or $burstActive -or $inProgressActive)) {
+			if (-not $extended -and $markerActive) {
 				$extended = $true
-				Write-RunLog ("Stage resolve extending wait | Requested={0} | WaitMs={1} | LockActive={2} | BurstActive={3} | InProgress={4}" -f $requested, $elapsed, $lockActive, $burstActive, $inProgressActive)
+				Write-RunLog ("Stage resolve extending wait | Requested={0} | WaitMs={1} | LockActive={2} | BurstActive={3} | InProgressActive={4}" -f $requested, $elapsed, $lockActive, $burstActive, $inProgressActive)
 			}
 
-			if ($elapsed -ge $maxTimeout -or (-not $lockActive -and -not $burstActive -and -not $inProgressActive)) {
+			if ($elapsed -ge $maxTimeout -or (-not $markerActive)) {
 				if ($snapshots.Count -gt 0) {
 					$latest = $snapshots |
 						Sort-Object @{
@@ -705,10 +748,10 @@ function Resolve-StagedPayload {
 							Descending = $true
 						} |
 						Select-Object -First 1
-					Write-RunLog ("Stage resolve timeout | Requested={0} | WaitMs={1} | Command={2} | Ready={3} | Expected={4} | Actual={5} | Session={6} | LockActive={7} | BurstActive={8} | InProgress={9}" -f $requested, $elapsed, $latest.CommandName, $latest.ReadyFlag, $latest.ExpectedCount, $latest.ActualCount, $latest.SessionId, $lockActive, $burstActive, $inProgressActive)
+					Write-RunLog ("Stage resolve timeout | Requested={0} | WaitMs={1} | Command={2} | Ready={3} | Expected={4} | Actual={5} | Session={6} | LockActive={7} | BurstActive={8} | InProgressActive={9} | ActiveMarkerSeen={10}" -f $requested, $elapsed, $latest.CommandName, $latest.ReadyFlag, $latest.ExpectedCount, $latest.ActualCount, $latest.SessionId, $lockActive, $burstActive, $inProgressActive, $observedActiveMarker)
 				}
 				else {
-					Write-RunLog ("Stage resolve timeout | Requested={0} | Backend={1} | WaitMs={2} | No stage snapshot found | LockActive={3} | BurstActive={4} | InProgress={5}" -f $requested, $Backend, $elapsed, $lockActive, $burstActive, $inProgressActive)
+					Write-RunLog ("Stage resolve timeout | Requested={0} | Backend={1} | WaitMs={2} | No stage snapshot found | LockActive={3} | BurstActive={4} | InProgressActive={5} | ActiveMarkerSeen={6}" -f $requested, $Backend, $elapsed, $lockActive, $burstActive, $inProgressActive, $observedActiveMarker)
 				}
 				return $null
 			}

@@ -26,6 +26,8 @@ $script:StageFilesDir = Join-Path $script:StageStateDir "staging"
 $script:StageInProgressPath = Join-Path $script:StageStateDir "stage.inprogress"
 $script:StageBackendDefault = "file"
 $script:StageDebugMode = $false
+$script:DesktopDirectEnterLogged = $false
+$script:DesktopDirectNoSelectionLogged = $false
 
 function Write-StageLog {
     param([string]$Message)
@@ -356,11 +358,15 @@ function Get-ExplorerSelectionFromParentEnumerated {
         # Pass 2: Desktop Direct Access via FindWindowSW (SWC_DESKTOP=8)
         # Shell.Application.Windows() does NOT include the Desktop (Progman.exe).
         # We use ShellWindows COM CLSID + FindWindowSW to access it directly.
-        # Trigger: no usable selection found (not just parentMatches=0), covers
-        # edge case where Explorer window IS open at Desktop path but selection
-        # is on the wallpaper Desktop (Progman), not in the Explorer window.
-        if ($fallbackCount -le 0 -and -not [string]::IsNullOrWhiteSpace($anchorNormalized)) {
-            Write-StageDebugLog "WindowScan | Entering Desktop Direct Access (FindWindowSW SWC_DESKTOP=8)"
+        # Trigger: anchor was not found in enumerated Explorer windows.
+        # Even when fallbackCount>0, this can still be a stale/non-anchor selection
+        # from another Desktop window; Desktop direct probe is required to avoid
+        # clobbering multi-select stage with a single wrong item.
+        if (-not [string]::IsNullOrWhiteSpace($anchorNormalized)) {
+            if (-not $script:DesktopDirectEnterLogged) {
+                Write-StageDebugLog "WindowScan | Entering Desktop Direct Access (FindWindowSW SWC_DESKTOP=8)"
+                $script:DesktopDirectEnterLogged = $true
+            }
             try {
                 $desktopShellWindows = [Activator]::CreateInstance(
                     [Type]::GetTypeFromCLSID([guid]"9BA05972-F6A8-11CF-A442-00A0C90A8F39"))
@@ -409,7 +415,10 @@ function Get-ExplorerSelectionFromParentEnumerated {
                             }
                         }
                         else {
-                            Write-StageDebugLog "WindowScan | DesktopDirect | No items selected on Desktop"
+                            if (-not $script:DesktopDirectNoSelectionLogged) {
+                                Write-StageDebugLog "WindowScan | DesktopDirect | No items selected on Desktop"
+                                $script:DesktopDirectNoSelectionLogged = $true
+                            }
                         }
                     }
                 }
@@ -488,8 +497,12 @@ function Get-ExplorerSelectionFromParent {
         $scanMs = [int][Math]::Round($scanTimer.Elapsed.TotalMilliseconds)
         $folderItemCount = -1
         $selectedCount = -1
+        $allTopLevelFilesHint = $false
+        $allTopLevelFilesCount = -1
+        $topLevelDirectoryCount = 0
         $folderCountMs = -1
         $selectedCountMs = -1
+        $allTopFilesHintMs = -1
 
         $folderCountTimer = [System.Diagnostics.Stopwatch]::StartNew()
         try { $folderItemCount = [int]($singleMatch.Folder.Items().Count) } catch { $folderItemCount = -1 }
@@ -502,14 +515,19 @@ function Get-ExplorerSelectionFromParent {
         $selectedCountMs = [int][Math]::Round($selectedCountTimer.Elapsed.TotalMilliseconds)
 
         $selectAllHint = ($folderItemCount -gt 0 -and $selectedCount -eq $folderItemCount)
-        $allTopLevelFilesHint = $false
-        $allTopLevelFilesCount = -1
-        $topLevelDirectoryCount = 0
-        $allTopFilesHintMs = -1
         $sourcePath = Resolve-NormalPath -PathValue $singleMatch.WindowFolderPath
         if (-not $sourcePath) { $sourcePath = $singleMatch.WindowFolderPath }
 
-        if ($folderItemCount -gt 0 -and $selectedCount -gt 0 -and -not [string]::IsNullOrWhiteSpace($sourcePath) -and [System.IO.Directory]::Exists($sourcePath)) {
+        # Fast-path extension:
+        # If selected count matches "all top-level files" (total items - top-level directories),
+        # emit wildcard token even when some folders are unselected.
+        if (
+            -not $selectAllHint -and
+            $selectedCount -ge $script:SelectAllTokenThreshold -and
+            $folderItemCount -gt 0 -and
+            -not [string]::IsNullOrWhiteSpace($sourcePath) -and
+            [System.IO.Directory]::Exists($sourcePath)
+        ) {
             $allTopFilesHintTimer = [System.Diagnostics.Stopwatch]::StartNew()
             try {
                 foreach ($ignoredDir in [System.IO.Directory]::EnumerateDirectories($sourcePath, "*", [System.IO.SearchOption]::TopDirectoryOnly)) {
@@ -530,8 +548,6 @@ function Get-ExplorerSelectionFromParent {
         Write-StageDebugLog ("WindowScan | Scanned={0} | ParentMatches={1} | MatchFoundMs={2} | COM_EnumMs={3} | RawCount={4} | FolderCount={5} | FolderCountMs={6} | SelectedCountMs={7} | SelectAllHint={8} | AllTopLevelFilesHint={9} | AllTopLevelFilesCount={10} | TopLevelDirectoryCount={11} | AllTopFilesHintMs={12} | AnchorHit={13} | CountOnlyMode={14}" -f $windowsScanned, $parentMatches, $scanMs, 0, $selectedCount, $folderItemCount, $folderCountMs, $selectedCountMs, $selectAllHint, $allTopLevelFilesHint, $allTopLevelFilesCount, $topLevelDirectoryCount, $allTopFilesHintMs, "n/a", $true)
 
         if (($selectAllHint -or $allTopLevelFilesHint) -and $selectedCount -ge $script:SelectAllTokenThreshold) {
-            $sourcePath = Resolve-NormalPath -PathValue $singleMatch.WindowFolderPath
-            if (-not $sourcePath) { $sourcePath = $singleMatch.WindowFolderPath }
                 $tokenScope = if ($allTopLevelFilesHint) { "FILES" } else { "ALL" }
                 $token = New-SelectAllToken -SourceDirectory $sourcePath -SelectedCount $selectedCount -Scope $tokenScope
                 if ($token) {
@@ -743,6 +759,40 @@ function Save-StagedPathsToFile {
     Write-StageDebugLog ("StageWriteSummary | Command={0} | Lines={1} | TempBytes={2} | FinalBytes={3} | AtomicMoveMs={4}" -f $CommandName, $lineCount, $tempBytes, $finalBytes, [int][Math]::Round($moveTimer.Elapsed.TotalMilliseconds))
 }
 
+function Get-ExistingStageHeader {
+    param(
+        [ValidateSet("rc", "mv")][string]$CommandName
+    )
+
+    try {
+        $stagedFile = Get-StagedJsonPath -CommandName $CommandName
+        if (-not (Test-Path -LiteralPath $stagedFile)) { return $null }
+        $reader = $null
+        try {
+            $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+            $reader = [System.IO.StreamReader]::new($stagedFile, $utf8NoBom)
+            $headerLine = $reader.ReadLine()
+            if ([string]::IsNullOrWhiteSpace($headerLine)) { return $null }
+            if (-not $headerLine.StartsWith("V2|")) { return $null }
+            $parts = $headerLine.Split("|")
+            if ($parts.Count -lt 5) { return $null }
+            $existExpected = 0
+            try { $existExpected = [int]$parts[4] } catch { $existExpected = 0 }
+            $existStageUtc = $null
+            try { $existStageUtc = [DateTime]::Parse($parts[3], $null, [System.Globalization.DateTimeStyles]::RoundtripKind) } catch { }
+            return [pscustomobject]@{
+                ExpectedCount = $existExpected
+                SessionId     = $parts[2]
+                LastStageUtc  = $existStageUtc
+            }
+        }
+        finally {
+            if ($reader) { $reader.Dispose() }
+        }
+    }
+    catch { return $null }
+}
+
 function Save-StagedPaths {
     param(
         [ValidateSet("rc", "mv")]
@@ -828,11 +878,45 @@ try {
     $selectionTimer = [System.Diagnostics.Stopwatch]::StartNew()
     $selectedPaths = @(Get-BestSelectionFromParent -ParentPath $parentPath -AnchorPath $anchorResolved)
     if ($selectedPaths.Count -eq 0) {
+        # Guard: if a valid multi-item stage already exists (recent), do NOT overwrite it.
+        # This prevents late-arriving burst calls (after normal Ctrl+C deselects everything)
+        # from clobbering a good multi-item stage with a single anchor fallback.
+        $existingHeader = Get-ExistingStageHeader -CommandName $command
+        if ($existingHeader -and $existingHeader.ExpectedCount -gt 1) {
+            $stageAgeSec = -1
+            if ($existingHeader.LastStageUtc) {
+                $stageAgeSec = [int][Math]::Round(((Get-Date).ToUniversalTime() - $existingHeader.LastStageUtc).TotalSeconds)
+            }
+            if ($stageAgeSec -ge 0 -and $stageAgeSec -le 5) {
+                $selectionTimer.Stop()
+                $stageTimer.Stop()
+                Write-StageDebugLog ("EmptySelectionGuard | ExistingExpected={0} | ExistingSession={1} | AgeSec={2} | Action='PreserveExisting'" -f $existingHeader.ExpectedCount, $existingHeader.SessionId, $stageAgeSec)
+                Write-StageLog ("SKIP | mode={0} | anchor='{1}' | reason='empty-selection-guard' | existingExpected={2} | ageSec={3}" -f $command, $anchorResolved, $existingHeader.ExpectedCount, $stageAgeSec)
+                exit 0
+            }
+        }
         $selectedPaths = @($anchorResolved)
     }
     elseif ($selectedPaths.Count -eq 1 -and -not (Test-IsSelectAllToken -PathValue $selectedPaths[0])) {
         $singleSelectedResolved = Resolve-NormalPath -PathValue $selectedPaths[0]
         if ([string]::IsNullOrWhiteSpace($singleSelectedResolved) -or -not [string]::Equals($singleSelectedResolved, $anchorResolved, [System.StringComparison]::OrdinalIgnoreCase)) {
+            # Guard: if a valid multi-item stage already exists (recent), do NOT overwrite it
+            # with a late single-selection mismatch from another/stale Explorer context.
+            $existingHeader = Get-ExistingStageHeader -CommandName $command
+            if ($existingHeader -and $existingHeader.ExpectedCount -gt 1) {
+                $stageAgeSec = -1
+                if ($existingHeader.LastStageUtc) {
+                    $stageAgeSec = [int][Math]::Round(((Get-Date).ToUniversalTime() - $existingHeader.LastStageUtc).TotalSeconds)
+                }
+                if ($stageAgeSec -ge 0 -and $stageAgeSec -le 5) {
+                    $selectionTimer.Stop()
+                    $stageTimer.Stop()
+                    Write-StageDebugLog ("SingleMismatchGuard | ExistingExpected={0} | ExistingSession={1} | AgeSec={2} | Anchor='{3}' | Selected='{4}' | Action='PreserveExisting'" -f $existingHeader.ExpectedCount, $existingHeader.SessionId, $stageAgeSec, $anchorResolved, $selectedPaths[0])
+                    Write-StageLog ("SKIP | mode={0} | anchor='{1}' | reason='single-mismatch-guard' | selected='{2}' | existingExpected={3} | ageSec={4}" -f $command, $anchorResolved, $selectedPaths[0], $existingHeader.ExpectedCount, $stageAgeSec)
+                    exit 0
+                }
+            }
+
             Write-StageDebugLog ("SingleAnchorGuard | MismatchDetected=True | Anchor='{0}' | Selected='{1}' | Action='UseAnchor'" -f $anchorResolved, $selectedPaths[0])
             Write-StageLog ("WARN | mode={0} | single-selection mismatch | anchor='{1}' | selected='{2}' | action='use-anchor'" -f $command, $anchorResolved, $selectedPaths[0])
             $selectedPaths = @($anchorResolved)
